@@ -41,6 +41,14 @@ class Store:
                 last_committed INTEGER NOT NULL DEFAULT 0
             )
         """)
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS node_status (
+                node TEXT PRIMARY KEY,
+                status TEXT NOT NULL,
+                risk_score REAL NOT NULL,
+                last_updated TEXT NOT NULL
+            )
+        """)
         c.execute("INSERT OR IGNORE INTO engine_offset (id, last_committed) VALUES (1, 0)")
         self.conn.commit()
         log.info("Schema initialised")
@@ -100,6 +108,40 @@ class Store:
             "UPDATE engine_offset SET last_committed=? WHERE id=1",
             (event["_offset"],),
         )
+        self.conn.commit()
+
+    def update_node_status(self, node: str, status: str, risk_score: float) -> None:
+        ts = datetime.now(timezone.utc).isoformat()
+        c = self.conn.cursor()
+        c.execute("""
+            INSERT INTO node_status (node, status, risk_score, last_updated)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(node) DO UPDATE SET
+                status = excluded.status,
+                risk_score = excluded.risk_score,
+                last_updated = excluded.last_updated
+        """, (node, status, risk_score, ts))
+        self.conn.commit()
+
+    def write_heartbeat_event(self, node: str, delta_seconds: float) -> None:
+        ts = datetime.now(timezone.utc).isoformat()
+        c = self.conn.cursor()
+        c.execute("""
+            INSERT INTO events (
+                timestamp, node, event_type, reasons, risk_score
+            ) VALUES (?, ?, ?, ?, ?)
+        """, (
+            ts, node, "NODE_UNRESPONSIVE", 
+            json.dumps([f"Node silent for {delta_seconds:.0f}s"]), 100.0
+        ))
+        c.execute("""
+            INSERT INTO node_status (node, status, risk_score, last_updated)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(node) DO UPDATE SET
+                status = excluded.status,
+                risk_score = excluded.risk_score,
+                last_updated = excluded.last_updated
+        """, (node, "unresponsive", 100.0, ts))
         self.conn.commit()
 
     def warm_restart_events(self, window_seconds: int) -> list:

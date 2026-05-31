@@ -38,6 +38,7 @@ docker-compose.override.yml
 
 # Others
 docker-cheatsheet.md
-
+Proposed_architecture_diagram.txt
+merge-analysis.md
 # Local data folder
 data/
