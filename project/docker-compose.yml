@@ -1,0 +1,74 @@
+services:
+
+  controller:
+    build: ./controller
+    container_name: controller
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./data:/data
+    networks:
+      - hpc_net
+
+  job_provider:
+    build: ./job_provider
+    container_name: job_provider
+    depends_on:
+      - controller
+    networks:
+      - hpc_net
+
+  dashboard:
+    build: ./dashboard
+    container_name: dashboard
+    ports:
+      - "5000:5000"
+    volumes:
+      - ./data:/data
+    depends_on:
+      - controller
+    networks:
+      - hpc_net
+
+  node1:
+    build: ./node
+    container_name: node1
+    environment:
+      - NODE_NAME=node1
+    depends_on:
+      - controller
+    networks:
+      - hpc_net
+
+  node2:
+    build: ./node
+    container_name: node2
+    environment:
+      - NODE_NAME=node2
+    depends_on:
+      - controller
+    networks:
+      - hpc_net
+
+  node3:
+    build: ./node
+    container_name: node3
+    environment:
+      - NODE_NAME=node3
+    depends_on:
+      - controller
+    networks:
+      - hpc_net
+
+  node4:
+    build: ./node
+    container_name: node4
+    environment:
+      - NODE_NAME=node4
+    depends_on:
+      - controller
+    networks:
+      - hpc_net
+
+networks:
+  hpc_net:
+    driver: bridge
