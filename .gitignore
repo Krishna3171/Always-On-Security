@@ -8,3 +8,4 @@ data/events.db
 # IDE files
 .vscode/
 .idea/
+.code-review-graph/
