@@ -43,6 +43,11 @@ class Store:
             ("bucket", "TEXT"),
             ("correlated", "INTEGER DEFAULT 0"),
             ("matched_rules", "TEXT"),
+            ("file_path", "TEXT"),
+            ("fim_event_type", "TEXT"),
+            ("sha256", "TEXT"),
+            ("file_size", "INTEGER"),
+            ("permissions", "TEXT"),
         ]:
             try:
                 c.execute(f"ALTER TABLE events ADD COLUMN {col} {defn}")
@@ -104,13 +109,15 @@ class Store:
 
     def write_event(self, event: dict, decision) -> None:
         ts = event.get("_received_at", datetime.now(timezone.utc).isoformat())
+        fim = event.get("fim_details") or {}
         c = self.conn.cursor()
         c.execute("""
             INSERT INTO events (
                 timestamp, node, cpu_usage, memory_usage, process_count,
                 event_type, reasons, risk_score,
-                weighted_score, bucket, correlated, matched_rules
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                weighted_score, bucket, correlated, matched_rules,
+                file_path, fim_event_type, sha256, file_size, permissions
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             ts,
             decision.node,
@@ -124,6 +131,11 @@ class Store:
             decision.bucket,
             1 if decision.correlated else 0,
             json.dumps([r[0] for r in decision.matched_rules]),
+            fim.get("file_path"),
+            fim.get("fim_event_type"),
+            fim.get("current_state", {}).get("sha256") if fim.get("current_state") else None,
+            fim.get("current_state", {}).get("file_size") if fim.get("current_state") else None,
+            fim.get("current_state", {}).get("permissions") if fim.get("current_state") else None,
         ))
         c.execute("""
             INSERT INTO node_scores (node, cumulative_score, updated_at)
