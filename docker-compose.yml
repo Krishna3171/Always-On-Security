@@ -29,7 +29,7 @@ services:
     build: ./dashboard
     container_name: dashboard
     ports:
-      - "5000:5000"
+      - "5001:5000"
     volumes:
       - ./data:/data
     depends_on:
@@ -104,6 +104,8 @@ services:
   wazuh:
     build: ./wazuh
     container_name: wazuh
+    volumes:
+      - ./data:/data
     networks:
       - security_net
 

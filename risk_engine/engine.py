@@ -1,7 +1,14 @@
 """
-Always-On Security — Risk Engine (with Security Layer)
-Integrates ThreatDetector and AlertManager alongside standard telemetry pipeline.
+Always-On Security — Risk Engine (Enhanced with Security Layer)
+
+Changes from baseline:
+  - Integrates ThreatDetector and AlertManager
+  - Routes controller-injected security alerts directly to AlertManager
+  - Runs all threat detectors on each event
+  - Enhanced heartbeat checker emits ThreatSignals via AlertManager
+  - Updated REQUIRED_FIELDS for new secure telemetry envelope
 """
+
 import time
 import logging
 import threading
@@ -18,28 +25,48 @@ from pipeline import Pipeline
 from threat_detector import ThreatDetector
 from alert_manager import AlertManager
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+)
 log = logging.getLogger("engine")
 
 CONFIG = "/opt/security/config"
 
-REQUIRED_FIELDS = {"node", "cpu_usage", "memory_usage", "process_count", "event_type", "reasons", "_offset"}
+# Fields required in every validated telemetry message.
+# Security envelope fields (msg_id, seq, timestamp, machine_id) are
+# preferred but optional at the engine level — the controller is the
+# enforcer. We keep _offset as mandatory.
+REQUIRED_FIELDS = {
+    "node", "cpu_usage", "memory_usage",
+    "process_count", "event_type", "reasons", "_offset",
+}
 
+# Track when each node was last seen (for heartbeat)
 node_last_seen      = {}
 node_last_seen_lock = threading.Lock()
-NODE_LIST           = ["node1", "node2", "node3", "node4"]
-HEARTBEAT_TIMEOUT   = 30
+
+NODE_LIST         = ["node1", "node2", "node3", "node4"]
+HEARTBEAT_TIMEOUT = 30  # seconds — default; per-node config read by ThreatDetector
 
 
 def validate(event: dict) -> bool:
+    """Check that all required fields are present."""
+    # Security-alert synthetic events from controller don't carry hardware fields
     if event.get("security_alert"):
         return "node" in event and "_offset" in event
     return REQUIRED_FIELDS.issubset(event.keys())
 
 
 def heartbeat_checker(store: Store, threat_detector: ThreatDetector, alert_manager: AlertManager):
+    """
+    Detects nodes that have stopped sending telemetry.
+    Runs in a background thread, checking every 10 seconds.
+    Now emits structured SecurityAlert records via AlertManager.
+    """
     log.info(f"Heartbeat checker running (timeout={HEARTBEAT_TIMEOUT}s)")
-    time.sleep(15)
+    time.sleep(15)  # Give nodes time to start
+
     while True:
         now = datetime.now()
         with node_last_seen_lock:
@@ -49,13 +76,16 @@ def heartbeat_checker(store: Store, threat_detector: ThreatDetector, alert_manag
                     continue
                 delta = (now - last).total_seconds()
                 if delta > HEARTBEAT_TIMEOUT:
-                    log.warning(f"HEARTBEAT: {node} unresponsive ({delta:.0f}s)")
+                    log.warning(
+                        f"HEARTBEAT: {node} unresponsive "
+                        f"({delta:.0f}s since last telemetry)"
+                    )
                     try:
                         store.write_heartbeat_event(node=node, delta_seconds=delta)
                         signal = threat_detector.build_silent_node_signal(node, delta)
                         alert_manager.emit(signal)
                     except Exception as e:
-                        log.error(f"Heartbeat error: {e}")
+                        log.error(f"Heartbeat processing error: {e}")
         time.sleep(10)
 
 
@@ -67,23 +97,31 @@ def main():
     correlator.warm_restart(past_events)
 
     pipeline = Pipeline(
-        enricher   = Enricher(store),
-        correlator = correlator,
-        rules      = RuleEngine.from_yaml(f"{CONFIG}/rules.yaml"),
-        scorer     = WeightedScorer.from_yaml(f"{CONFIG}/thresholds.yaml", f"{CONFIG}/node_criticality.yaml"),
-        router     = Router.from_yaml(f"{CONFIG}/thresholds.yaml"),
+        enricher  = Enricher(store),
+        correlator= correlator,
+        rules     = RuleEngine.from_yaml(f"{CONFIG}/rules.yaml"),
+        scorer    = WeightedScorer.from_yaml(
+            f"{CONFIG}/thresholds.yaml",
+            f"{CONFIG}/node_criticality.yaml",
+        ),
+        router    = Router.from_yaml(f"{CONFIG}/thresholds.yaml"),
     )
 
     threat_detector = ThreatDetector(store)
     alert_manager   = AlertManager(store)
-    last_offset     = store.last_committed_offset()
+
+    last_offset = store.last_committed_offset()
     log.info(f"Risk engine ready — resuming from offset {last_offset}")
 
+    # Start heartbeat checker thread
     hb_thread = threading.Thread(
-        target=heartbeat_checker, args=(store, threat_detector, alert_manager),
-        name="HeartbeatChecker", daemon=True,
+        target=heartbeat_checker,
+        args=(store, threat_detector, alert_manager),
+        name="HeartbeatChecker",
+        daemon=True,
     )
     hb_thread.start()
+    log.info("Started heartbeat checker thread")
 
     ctx  = zmq.Context()
     sock = ctx.socket(zmq.PULL)
@@ -98,45 +136,64 @@ def main():
             continue
 
         if not validate(event):
-            log.warning(f"Dropped malformed event: {sorted(event.keys())}")
+            log.warning(
+                f"Dropped malformed event (missing fields): "
+                f"{sorted(event.keys())}"
+            )
             continue
 
         offset = event["_offset"]
         if offset <= last_offset:
+            log.debug(f"Skipping replayed offset {offset} (committed={last_offset})")
             continue
 
+        # Update heartbeat tracking
         node = event.get("node", "unknown")
         with node_last_seen_lock:
             node_last_seen[node] = datetime.now()
 
-        # Controller-injected security alerts bypass pipeline
+        # ── Route controller-injected security alerts directly ────────
         if event.get("security_alert"):
             alert = alert_manager.emit_from_event(event)
             if alert:
-                log.info(f"[CONTROLLER_ALERT] {alert.threat_type} | node={alert.node_id} | {alert.severity}")
+                log.info(
+                    f"[CONTROLLER_ALERT] {alert.threat_type} | "
+                    f"node={alert.node_id} | severity={alert.severity}"
+                )
             last_offset = offset
             continue
 
+        # ── Standard telemetry pipeline ───────────────────────────────
         try:
             decision = pipeline.process(event)
             store.write_event(event, decision)
             last_offset = offset
 
+            # Update node status
             status = "idle"
             if event.get("is_busy"):
                 status = "busy"
             if decision.bucket == "quarantine":
                 status = "quarantined"
-            store.update_node_status(node=node, status=status, risk_score=decision.cumulative_score)
+            store.update_node_status(
+                node=node,
+                status=status,
+                risk_score=decision.cumulative_score,
+            )
+
             pipeline.router.dispatch(decision)
 
+            # ── Run threat detectors ──────────────────────────────────
             signals = threat_detector.run(event)
             if signals:
                 alerts = alert_manager.emit_batch(signals)
                 log.info(f"Emitted {len(alerts)} threat alert(s) for node={node}")
 
         except Exception as e:
-            log.error(f"Pipeline error at offset {offset}: {e}", exc_info=True)
+            log.error(
+                f"Pipeline error at offset {offset}: {e}",
+                exc_info=True,
+            )
 
 
 if __name__ == "__main__":
