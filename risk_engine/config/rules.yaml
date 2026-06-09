@@ -1,70 +1,28 @@
 - id: HIGH_CPU
-  severity: 20
-  blast_radius: 25
   match:
-    reasons_contains: "High CPU usage"
+    reasons_contains: "CPU"
+  severity: 10
+  blast_radius: 5
 
 - id: HIGH_MEMORY
-  severity: 20
-  blast_radius: 25
   match:
-    reasons_contains: "High memory usage"
+    reasons_contains: "memory"
+  severity: 10
+  blast_radius: 5
 
-- id: PROCESS_EXPLOSION
-  severity: 30
-  blast_radius: 30
+- id: PROCESS_COUNT
   match:
-    reasons_contains: "Too many running processes"
+    reasons_contains: "Too many"
+  severity: 15
+  blast_radius: 10
 
 - id: SUSPICIOUS_PROCESS
-  severity: 40
-  blast_radius: 40
   match:
-    reasons_contains: "Suspicious process detected"
+    reasons_contains: "Suspicious process"
+  severity: 35
+  blast_radius: 20
 
-- id: FAILED_LOGIN_BURST
-  severity: 55
-  blast_radius: 60
-  match:
-    reasons_contains: "Excessive failed login attempts"
-
-- id: PRIVILEGE_ESCALATION
-  severity: 80
-  blast_radius: 85
-  match:
-    reasons_contains: "Privilege escalation attempts detected"
-
-- id: FIM_FILE_CREATED
-  match:
-    reasons_contains: "FIM Created"
-  severity: 40
-  blast_radius: 35
-
-- id: FIM_FILE_MODIFIED
-  match:
-    reasons_contains: "FIM Modified"
-  severity: 50
-  blast_radius: 40
-
-- id: FIM_PERMISSION_CHANGED
-  match:
-    reasons_contains: "FIM Permission"
-  severity: 60
-  blast_radius: 45
-
-- id: FIM_FILE_DELETED
-  match:
-    reasons_contains: "FIM Deleted"
-  severity: 70
-  blast_radius: 50
-
-- id: FIM_BASELINE_TAMPERING
-  match:
-    reasons_contains: "tampering"
-  severity: 90
-  blast_radius: 60
-
-# ── Security layer rules ──────────────────────────────────────────────────────
+# ── Security Layer Rules ─────────────────────────────────────────────────────
 
 - id: ROGUE_NODE
   match:

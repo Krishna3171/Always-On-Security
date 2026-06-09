@@ -2,6 +2,8 @@
 
 A distributed, container-based security monitoring simulation that demonstrates real-time anomaly detection, cumulative risk scoring, automated quarantine, and live dashboard visualization.
 
+*Note: This project has been significantly enhanced with an **Advanced Security Layer** providing cryptographic node identity, replay protection, and node-level threat detection.*
+
 ---
 
 ## Architecture Overview
@@ -11,7 +13,7 @@ The system is built as a multi-container Docker application with the following l
 1. **Layer 1: Node Agents (`node_agent/`)** — Dual-threaded edge agents that collect system telemetry (CPU, memory, process count) while simulating workload states. Includes a built-in threat simulator for testing.
 2. **Layer 2: Event Bus & Durability (`controller/`)** — A lightweight message forwarder that receives telemetry via ZeroMQ, stamps events with a sequential offset, and persists state atomically for crash recovery.
 3. **Layer 3: Risk Engine (`risk_engine/`)** — A stateless Python microservice that assesses risk. Features context-aware threshold checks, risk decay (self-healing), cross-node correlation, and heartbeat monitoring.
-4. **Layer 4: Auto-Remediation & Human Review (`risk_engine/router.py`)** — Monitors risk levels and routes decisions into buckets (silent, auto, human, quarantine). Pauses nodes awaiting manual approval and stops quarantined nodes.
+4. **Layer 4: Auto-Remediation (`risk_engine/router.py`)** — Monitors risk levels and routes decisions into buckets (silent, auto, human, quarantine). Initiates container-based node isolation via the Docker API.
 5. **Layer 5: Visibility & Alerting (`dashboard/` & `wazuh/`)** — A Flask-based web dashboard showing real-time statistics and node states, plus a simulated Wazuh SIEM manager receiving UDP alerts.
 
 ```
@@ -19,7 +21,7 @@ The system is built as a multi-container Docker application with the following l
                 │          RISK ENGINE             │
                 │  YAML Rules & Scoring Pipeline   │
                 │  Heartbeat & Correlation         │
-                │  Remediation Router              │──► Docker API (Quarantine & Pause)
+                │  Remediation Router              │──► Docker API (Quarantine)
                 │  DB Writer                       │──► SQLite
                 └───────────────▲──────────────────┘
                                 │ ZMQ :5556
@@ -43,46 +45,22 @@ The system is built as a multi-container Docker application with the following l
 
 ## Key Features
 
-* **Cumulative Risk Scoring & Self-Healing:** The risk engine maintains a cumulative risk score for each node using severity, blast radius, and asset criticality. If anomalies cease, the risk score decays slowly back to 0.
-* **Heartbeat Monitor:** Detects silent node failures. If a node fails to send telemetry for 30 seconds, it is marked as unresponsive (paused, quarantined, or awaiting approval nodes are bypassed to avoid false positives).
-* **Cross-Node Correlation:** Detects coordinated attacks hitting 3+ nodes simultaneously within a 10-minute window and applies a `1.5x` risk multiplier.
-* **Human-in-the-Loop Review Track:** If a node's cumulative risk score rises into the `71-100` range, the risk engine issues a `docker pause` via the Docker API to freeze the container. The operator must review contributing threat events in the live dashboard, and click "Execute Remediation Playbook" to run a simulated remediation pipeline (sequentially executing `mock_slurm`, `mock_ansible`, and `mock_openscap`), which unpauses the container and resets its risk score.
-* **Automated Quarantine:** Once a node's cumulative risk score exceeds `100`, the system automatically quarantines the node by stopping its container (`docker stop`) via the Docker API.
-* **Mock Wazuh Integration:** A simulated Wazuh SIEM manager receives and displays security alerts via UDP when events escalate to Warning, High, or Critical thresholds.
+* **Cumulative Risk Scoring & Self-Healing:** The controller maintains a cumulative risk score for each node. If anomalies cease, the risk score decays slowly back to 0. Accounts for asset criticality.
+* **Heartbeat Monitor:** Detects silent node failures. If a node fails to send telemetry for 30 seconds, it is marked as unresponsive.
+* **Cross-Node Correlation:** Detects coordinated attacks hitting 3+ nodes simultaneously and applies a risk multiplier.
+* **Automated Quarantine:** Once a node's cumulative risk score hits or exceeds `100` (quarantine bucket), the system automatically stops the compromised node's container via the Docker API.
+* **Mock Wazuh Integration:** A simulated Wazuh SIEM manager receives and displays security alerts via UDP when a node is quarantined.
 
 ---
 
-## Risk Scoring & Decision Pipeline
+## Security Detection Rules
 
-The risk engine dynamically calculates risk increments for each incoming telemetry event using the following formula:
-
-$$\text{Event Score} = \max_{\text{matched rules}} \left( \frac{\text{Severity} \times \text{Blast Radius} \times \text{Asset Criticality}}{1000} \right) \times \text{Correlation Multiplier}$$
-
-* **Asset Criticality**: Configured in `node_criticality.yaml` (`node1`: 3, `node2`: 3, `node3`: 5, `node4`: 20, `default`: 4).
-* **Correlation Multiplier**: `1.5` if a coordinated attack is detected on 3 or more nodes within a 10-minute window.
-* **Self-Healing (Risk Decay)**: When a node's metrics return to normal, its cumulative risk score automatically decays by `5.0` points per normal event cycle down to `0.0`.
-
-### Security Detection Rules (Configured in rules.yaml & agent.py)
-
-| Rule ID | Metric / Trigger Condition | Severity | Blast Radius |
-| :--- | :--- | :---: | :---: |
-| **HIGH_CPU** | CPU Usage > 80% | 20 | 25 |
-| **HIGH_MEMORY** | Memory Usage > 85% | 20 | 25 |
-| **PROCESS_EXPLOSION** | Total Process Count > 300 | 30 | 30 |
-| **SUSPICIOUS_PROCESS** | Execution of hacking tools (e.g. `nmap`, `hydra`, `nc`, `stress`) | 40 | 40 |
-| **FAILED_LOGIN_BURST** | Failed login attempts > 5 within a cycle | 55 | 60 |
-| **PRIVILEGE_ESCALATION** | Privilege escalation attempts > 0 within a cycle | 80 | 85 |
-
-### Mitigation & Routing Action Buckets
-
-Based on the cumulative risk score, the nodes are routed into four distinct buckets (defined in `thresholds.yaml`):
-
-| Cumulative Score | Bucket | Action Taken |
+| Rule | Trigger Condition | Risk Increment |
 | :--- | :--- | :--- |
-| **0 – 30** | `silent` | No action taken. |
-| **31 – 70** | `auto` | Auto-remediation warning logged and sent to Wazuh SIEM. |
-| **71 – 100** | `human` | **Human-in-the-Loop:** Container is frozen via `docker pause`. Operator must review incidents on the dashboard and manually approve remediation to unpause. |
-| **> 100** | `quarantine` | **Quarantine:** Container is stopped via `docker stop` and a critical SIEM alert is dispatched. |
+| **High CPU** | CPU > 10% | `+20` risk points |
+| **High Memory** | Memory > 50% | `+20` risk points |
+| **Too Many Processes** | Process count > 300 | `+25` risk points |
+| **Suspicious Process** | Binary name match (e.g. `nmap`, `hydra`, `nc`, `stress`) | `+40` risk points |
 
 ---
 
@@ -90,14 +68,20 @@ Based on the cumulative risk score, the nodes are routed into four distinct buck
 
 Currently, a node is marked as suspicious if it exhibits one or more of the following:
 
-* High CPU usage (> 80%)
-* High memory usage (> 85%)
-* Excessive number of running processes (> 300)
-* Running suspicious process names (e.g., `stress`, `nmap`, `hydra`, `netcat`, `metasploit`, etc.)
-* Burst of failed login attempts (> 5)
-* Privilege escalation attempts (> 0)
+* High CPU usage
+* High memory usage
+* Excessive number of running processes
+* Suspicious process names (e.g., `stress`, `nmap`, `hydra`, `netcat`)
 
-These detections are monitored by the edge node agent and forwarded via the ZeroMQ event bus.
+**Additionally, the system now covers advanced Node-Related Threats:**
+* **Rogue Node Detection**: Rejects telemetry from unauthorized machine IDs.
+* **Replay Attacks**: Blocks duplicated, previously seen messages.
+* **Message Flooding**: Rate limits excessive telemetry from a single node.
+* **Config Tampering**: Hashes critical files (e.g. `/etc/hosts`) against a baseline.
+* **Lateral Movement**: Detects unexpected outbound SSH connections.
+* **Telemetry Tampering**: Validates cryptographic HMAC-SHA256 signatures on all messages.
+
+These detections are rule-based and serve as a proof-of-concept implementation.
 
 ---
 
@@ -171,10 +155,16 @@ cd Always-On-Security
 
 ## Start the System
 
+Before starting the system for the first time, you must generate the baseline configuration hashes and the `.env` file containing the HMAC secret:
+
+```bash
+python3 generate_baseline.py
+```
+
 Build and start all 9 services:
 
 ```bash
-docker compose up --build
+docker compose up --build -d
 ```
 
 The following containers will start inside the `security_net` bridge network:
@@ -207,29 +197,57 @@ You should see:
 ## Generate a Test Alert
 
 **Method 1: Automatic (Built-in Simulator)**
-The node agents include a built-in threat simulator that will automatically trigger randomly (`node1` has a higher trigger chance). Once triggered, the simulator escalates through 5 stages:
-1. **Stage 1 (CPU Anomaly)**: Sets CPU to 92.5%, triggering a `HIGH_CPU` event.
-2. **Stage 2 (Memory Anomaly)**: Sets memory to 88.0%, triggering a `HIGH_MEMORY` event.
-3. **Stage 3 (Process Explosion & logins)**: Sets process count to 310 and simulates 8-20 failed logins, triggering `PROCESS_EXPLOSION` and `FAILED_LOGIN_BURST` events.
-4. **Stage 4 (Suspicious Binary)**: Spawns simulated `hydra` execution, triggering `SUSPICIOUS_PROCESS`.
-5. **Stage 5 (Privilege Escalation)**: Simulates 1-5 privilege escalation attempts, triggering `PRIVILEGE_ESCALATION`.
-
-Watch the live dashboard to see these threats escalate the node's cumulative risk score. Since the score will land in the `71-100` range, the container will automatically pause (status: `awaiting_approval`). Clicking **Review & Approve** in the dashboard lets you inspect the incident timeline and trigger the simulated remediation playbook to unpause the node.
+The node agents include a built-in threat simulator that will automatically trigger every few minutes (`node1` has a higher chance). Simply watch the dashboard to see an attack escalate through 4 stages and end in quarantine.
 
 **Method 2: Manual Trigger**
-Open a shell inside one of the node containers:
+Open a shell inside a node:
 
 ```bash
 docker exec -it node1 bash
 ```
 
-To trigger high CPU usage manually, run:
+Generate high CPU usage:
 
 ```bash
 yes > /dev/null
 ```
 
-This will trigger a `HIGH_CPU` alert, initiating risk accumulation and real-time visualization on the dashboard. Stop the process by pressing `CTRL + C`.
+This should trigger:
+
+* High CPU detection
+* Risk score increase
+* Event creation
+* Dashboard updates
+* Node quarantine (when risk ≥ 100)
+* Wazuh alert (when node is quarantined)
+
+Stop the process:
+
+```bash
+CTRL + C
+```
+
+**Method 3: Advanced Node Attacks**
+
+You can also test the newly added cryptographic and node-level detectors:
+
+**1. Config Tampering (Triggers `CONFIG_TAMPER` alert)**
+Modify a monitored configuration file on a running node:
+```bash
+docker exec node1 sh -c "echo '1.2.3.4 evil.com' >> /etc/hosts"
+```
+
+**2. Rogue Node Injection (Triggers `ROGUE_NODE` alert)**
+Launch an unauthorized node connecting to the controller. *Note: this requires the `.env` file to be present to grab the HMAC secret.*
+```bash
+docker run --rm --network always-on-security_security_net \
+  -e NODE_NAME=rogue99 \
+  -e HMAC_SECRET=$(grep HMAC_SECRET .env | cut -d= -f2) \
+  always-on-security-node1
+```
+
+**3. Telemetry Tampering / Replay Attacks**
+Since all messages are cryptographically signed with HMAC-SHA256, sending raw JSON via `netcat` will be rejected by the Controller. To test `REPLAY_ATTACK` or `TELEMETRY_TAMPER`, you must extract the `HMAC_SECRET` from `.env` and write a custom python script using `pyzmq` to sign and send duplicate `msg_id`s or modify payloads post-signing.
 
 ---
 
@@ -252,3 +270,30 @@ docker compose down                 # Stop and clean up the environment
 * Automated remediation via Docker API
 * Dashboard visualization with Flask + SQLite
 * Mock SIEM integration (Wazuh)
+
+### Advanced Security Enhancements (Recent PR/Merge)
+
+The core monitoring architecture has been significantly hardened to simulate an air-gapped, always-on HPC security environment. This update shifts the project from a simple telemetry dashboard to an active threat-defense system. Key additions include:
+
+* **1. Cryptographic Telemetry Protocol (`node_agent/secure_messenger.py`)**
+  All inter-node communication over ZeroMQ is now signed with an ephemeral HMAC-SHA256 signature. A shared `.env` secret prevents unauthorized actors from injecting fake telemetry or tampering with resource usage metrics in transit.
+
+* **2. Six-Tier Controller Security Gate (`controller/controller.py`)**
+  The central message broker now acts as a hardened security gate. Before forwarding any event to the Risk Engine, it runs 6 distinct checks:
+  - **HMAC Verification:** Rejects tampered payloads.
+  - **ReplayGuard:** Drops duplicated `msg_id`s within a sliding time window.
+  - **FloodGuard:** Enforces rate-limiting to prevent DoS via telemetry flooding.
+  - **Rogue Node Detection:** Blocks traffic from unrecognized `machine_id`s.
+  - **Impersonation Checks:** Flags nodes trying to spoof trusted identities.
+
+* **3. Node-Level Threat Collection (`node_agent/security_collector.py`)**
+  Agents now run a dedicated third thread (`SecurityCollector`) that actively monitors the host for compromise:
+  - **Config Tampering:** Hashes critical system files (`/etc/hosts`, `/etc/passwd`) against a generated baseline (`config_hashes.yaml`).
+  - **Lateral Movement:** Scans active TCP connections for unexpected outbound SSH activity.
+  - **Process Policy Enforcement:** Monitors running processes against an explicit allowlist/denylist.
+
+* **4. Unified Threat Engine (`risk_engine/threat_detector.py` & `alert_manager.py`)**
+  The Risk Engine now integrates 10 advanced threat detectors (Rogue Node, Impersonation, Silent Node Timeout, etc.) directly into the cumulative scoring pipeline. Threats are categorized by severity (INFO to CRITICAL) and persisted in a new `security_alerts` SQLite table.
+
+* **5. Dark-Mode Security Dashboard (`dashboard/templates/index.html`)**
+  The UI was completely overhauled into a modern, dark-mode security operations center (SOC). It features live-updating SVG threat distribution charts, node trust badges (TRUSTED vs ROGUE), protocol integrity counters, and an XSS-safe dynamic alert feed.
