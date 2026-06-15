@@ -18,5 +18,17 @@ RUN chmod +x /entrypoint.sh
 ENV SERVICE_NAME=controller
 ENV INTEGRITY_ALLOW_MISSING_MANIFEST=true
 
+# ── Security: non-root user ────────────────────────────────────────────────
+# Semgrep: dockerfile.security.missing-user-entrypoint (DL3002 / CKV_DOCKER_8)
+# The controller does not run iptables — a plain non-root user is sufficient.
+# /data is pre-created and owned by appuser so integrity audit records can
+# be written without elevated permissions.
+RUN groupadd -r appgroup \
+ && useradd -r -g appgroup -u 1000 -d /app -s /sbin/nologin appuser \
+ && mkdir -p /data/integrity_audits \
+ && chown -R appuser:appgroup /data /app
+
+USER appuser
+
 ENTRYPOINT ["/entrypoint.sh"]
 CMD ["python", "controller.py"]

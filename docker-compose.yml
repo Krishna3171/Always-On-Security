@@ -27,6 +27,11 @@ services:
       context: .
       dockerfile: risk_engine/Dockerfile
     container_name: risk-engine
+    # ── Security: capabilities required for non-root enforcement actions ──
+    # CAP_NET_ADMIN: allows appuser (UID 1000) to manage iptables DROP rules
+    #                for node isolation without running as root (DL3002 fix).
+    cap_add:
+      - NET_ADMIN
     environment:
       - ALLOWLIST_PATH=/opt/security/config/allowlist.yaml
       # ── REC-08: Pre-flight integrity check ──────────────────────────
