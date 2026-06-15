@@ -40,6 +40,7 @@ log = logging.getLogger("controller")
 # Paths
 # ─────────────────────────────────────────
 OFFSET_PATH   = "/data/controller.offset"
+BLACKLIST_PATH = "/data/rogue_blacklist.yaml"
 ALLOWLIST_PATH = os.getenv("ALLOWLIST_PATH", "/opt/security/config/allowlist.yaml")
 
 # ─────────────────────────────────────────
@@ -74,6 +75,24 @@ def save_offset(offset: int) -> None:
         f.flush()
         os.fsync(f.fileno())
     os.replace(tmp, OFFSET_PATH)
+
+
+def load_blacklist() -> set:
+    try:
+        with open(BLACKLIST_PATH) as f:
+            data = yaml.safe_load(f)
+            return set(data) if isinstance(data, list) else set()
+    except Exception:
+        return set()
+
+
+def save_blacklist(blacklist: set) -> None:
+    tmp = BLACKLIST_PATH + ".tmp"
+    with open(tmp, "w") as f:
+        yaml.dump(list(blacklist), f)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, BLACKLIST_PATH)
 
 
 # ─────────────────────────────────────────
@@ -210,6 +229,7 @@ def main():
     node_machine_ids: dict[str, str]  = {}
     node_source_addrs: dict[str, str] = {}
 
+    rogue_blacklist = load_blacklist()
     offset = load_offset()
     log.info(f"Controller starting at offset {offset}")
     log.info(f"Allowed nodes: {allowed or '(all — no allowlist configured)'}")
@@ -244,6 +264,10 @@ def main():
         seq        = raw.get("seq", -1)
         timestamp  = raw.get("timestamp", "")
 
+        # ── PRE-CHECK: Silently drop known rogue nodes ─────────────────
+        if node in rogue_blacklist:
+            continue
+
         offset += 1
 
         # ── CHECK 1: HMAC Verification ─────────────────────────────────
@@ -268,6 +292,11 @@ def main():
         # ── CHECK 2: Rogue Node Detection ─────────────────────────────
         if allowed and node not in allowed:
             log.warning(f"[ROGUE_NODE] Unknown node={node} not in allowlist.")
+            
+            # Add to persistent blacklist so subsequent messages are dropped
+            rogue_blacklist.add(node)
+            save_blacklist(rogue_blacklist)
+            
             alert = _make_security_alert(
                 node=node,
                 threat_type="ROGUE_NODE",
