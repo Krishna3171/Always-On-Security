@@ -453,6 +453,7 @@ Push / PR
 - **`# nosec B108/B103`** — suppressed on intentional `/tmp` fallback path and attack simulator `chmod` with justification comments
 - **`# nosemgrep`** — suppressed on Flask `0.0.0.0` binding, mock SIEM `socket.bind`, and attack simulator `chmod`; all with exact rule IDs
 - **`.dockerignore`** — added to all 6 service directories; `.env` can no longer be accidentally included in a Docker image layer
+- **Non-root `USER` in Dockerfiles (DL3002 / Semgrep `missing-user-entrypoint`)** — `controller` and `risk-engine` now run as `appuser` (UID 1000). The risk-engine is granted `CAP_NET_ADMIN` in `docker-compose.yml` so iptables enforcement works without root; Docker socket access is via the `docker` group (GID 999).
 
 ### Compliance Mapping
 
@@ -469,5 +470,4 @@ Push / PR
 
 - HMAC\_SECRET passed as plain env var — should migrate to Docker secrets (REC-11)
 - Docker base images use floating tags (`python:3.11-slim`) — should pin to digest (DL3007)
-- No non-root `USER` instruction in Dockerfiles — containers run as root (DL3002)
 - No `HEALTHCHECK` in any Dockerfile (CKV\_DOCKER\_2)
