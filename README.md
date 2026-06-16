@@ -303,6 +303,44 @@ docker run --rm --network always-on-security_security_net \
 **3. Telemetry Tampering / Replay Attacks**
 Since all messages are cryptographically signed with HMAC-SHA256, sending raw JSON via `netcat` will be rejected by the Controller. To test `REPLAY_ATTACK` or `TELEMETRY_TAMPER`, you must extract the `HMAC_SECRET` from `.env` and write a custom python script using `pyzmq` to sign and send duplicate `msg_id`s or modify payloads post-signing.
 
+**4. Pre-Flight Config Integrity Block (REC-08)**
+The system will now actively refuse to start if its critical configuration files have been maliciously modified or corrupted. To test this:
+1. Make a subtle modification to a central config file on the host:
+   ```bash
+   echo "# Tampered" >> risk_engine/config/rules.yaml
+   ```
+2. Restart the risk-engine service:
+   ```bash
+   docker compose restart risk-engine
+   ```
+3. Watch the startup logs—you will see a large red error, and the container will immediately exit with code 2 rather than starting:
+   ```bash
+   docker compose logs risk-engine
+   ```
+4. Revert the file and restart to bring the service back up:
+   ```bash
+   git checkout risk_engine/config/rules.yaml
+   docker compose restart risk-engine
+   ```
+
+**5. Pre-Quarantine Forensic Capture (REC-09)**
+Trigger a quarantine on any node, then inspect the captured evidence before the container is stopped:
+1. Force a node into quarantine by running the built-in threat simulator or manually flooding its risk score.
+2. Watch the risk-engine logs for the forensic capture sequence:
+   ```bash
+   docker compose logs -f risk-engine | grep FORENSICS
+   ```
+   You will see:
+   ```
+   [FORENSICS] Starting pre-quarantine capture | node=node1 trigger=QUARANTINE
+   [FORENSICS] Artifact saved: /data/forensics/node1_QUARANTINE_20260615T130000Z.json
+   [FORENSICS] Capture complete | node=node1
+   ```
+3. Inspect the JSON artefact on the host:
+   ```bash
+   docker compose exec risk-engine cat /data/forensics/node1_QUARANTINE_*.json | python3 -m json.tool
+   ```
+   The file contains the process list, network connections, container state, recent alerts, and recent events — all captured at the exact moment of quarantine.
 ---
 
 ## Useful Commands
@@ -351,6 +389,20 @@ The core monitoring architecture has been significantly hardened to simulate an 
 
 * **5. Dark-Mode Security Dashboard (`dashboard/templates/index.html`)**
   The UI was completely overhauled into a modern, dark-mode security operations center (SOC). It features live-updating SVG threat distribution charts, node trust badges (TRUSTED vs ROGUE), protocol integrity counters, and an XSS-safe dynamic alert feed.
+
+* **6. Pre-flight Config Integrity Check (`scripts/check_config_integrity.py` & `scripts/entrypoint.sh`)**
+  Enforces NIST CM-2 / CM-6 / SI-7. A strict startup check added to `risk-engine` and `controller` verifies all service YAML configurations (`rules.yaml`, `allowlist.yaml`, etc.) against a trusted SHA-256 baseline (`config_hashes.yaml`). 
+  * If a file has been tampered with, the `entrypoint.sh` wrapper intercepts the startup, prints a detailed error to stdout, and exits with code 2. This prevents the system from ever operating with blinded detection rules or a modified allowlist.
+  * Every startup check writes a machine-readable JSON audit record to a persistent `/data/integrity_audits` volume for forensics.
+
+* **7. Pre-Quarantine Forensic Capture (`risk_engine/router.py` & `risk_engine/store.py`)**
+  Enforces NIST IR-4 / IR-5. The moment a node is escalated to the `quarantine` bucket, the system freezes evidence *before* the container is stopped:
+  * **Process list** — full `ps aux` output from inside the container, capturing every running process at time-of-quarantine.
+  * **Network connections** — active TCP connections via `ss -tnp`, revealing any live C2 channels or lateral movement paths.
+  * **Container state** — image, PID, network IPs, and mount points from `docker inspect`.
+  * **Recent security alerts** — the last 20 security alerts for the node pulled from the DB.
+  * **Recent telemetry events** — the last 20 risk-scored events from the `events` table.
+  * Evidence is written to **two independent locations**: the `forensic_snapshots` SQLite table (queryable by the dashboard) and a timestamped JSON file under the persistent `/data/forensics` volume (survives container removal and DB resets).
 
 ---
 
@@ -401,6 +453,7 @@ Push / PR
 - **`# nosec B108/B103`** — suppressed on intentional `/tmp` fallback path and attack simulator `chmod` with justification comments
 - **`# nosemgrep`** — suppressed on Flask `0.0.0.0` binding, mock SIEM `socket.bind`, and attack simulator `chmod`; all with exact rule IDs
 - **`.dockerignore`** — added to all 6 service directories; `.env` can no longer be accidentally included in a Docker image layer
+- **Non-root `USER` in Dockerfiles (DL3002 / Semgrep `missing-user-entrypoint`)** — `controller` and `risk-engine` now run as `appuser` (UID 1000). The risk-engine is granted `CAP_NET_ADMIN` in `docker-compose.yml` so iptables enforcement works without root; Docker socket access is via the `docker` group (GID 999).
 
 ### Compliance Mapping
 
@@ -417,5 +470,4 @@ Push / PR
 
 - HMAC\_SECRET passed as plain env var — should migrate to Docker secrets (REC-11)
 - Docker base images use floating tags (`python:3.11-slim`) — should pin to digest (DL3007)
-- No non-root `USER` instruction in Dockerfiles — containers run as root (DL3002)
 - No `HEALTHCHECK` in any Dockerfile (CKV\_DOCKER\_2)
