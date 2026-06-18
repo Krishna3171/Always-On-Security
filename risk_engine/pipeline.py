@@ -29,11 +29,11 @@ class Pipeline:
         node = event.get("node", "unknown")
         offset = event.get("_offset", 0)
 
-        # Step 2: enrich with SQLite context (score, incident count)
+        # Step 1: enrich with SQLite context (score, incident count)
         event = self.enricher.enrich(event)
         current_score = event["_current_score"]
 
-        # Step 4: rule matching
+        # Step 2: rule matching
         matches = self.rules.match(event)
 
         # Step 3: cross-node correlation (checked per matched rule)
@@ -45,6 +45,19 @@ class Pipeline:
             if c:
                 correlated = True
                 multiplier = max(multiplier, m)
+
+        # Step 4: multi-signal correlation (per-node, Improvement 6)
+        # Record each matched rule's threat type for per-node multi-signal windows
+        event_type = event.get("event_type", "NORMAL")
+        if event_type not in ("NORMAL",):
+            self.correlator.record_threat(node, event_type, now)
+        ms_correlated, ms_multiplier, ms_label = self.correlator.check_multi_signal(node, now)
+        if ms_correlated:
+            correlated = True
+            multiplier = max(multiplier, ms_multiplier)
+            if ms_label:
+                event.setdefault("reasons", [])
+                event["reasons"] = list(event["reasons"]) + [f"Multi-signal: {ms_label}"]
 
         # Step 5: weighted scoring
         event_score, new_cumulative, bucket = self.scorer.score(

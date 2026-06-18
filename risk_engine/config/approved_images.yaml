@@ -1,0 +1,25 @@
+# Approved container image digests for workload nodes.
+#
+# Format: <container_name>: <sha256_digest>
+#
+# The Host Observer validates that each running container's image digest
+# matches the value recorded here. A mismatch generates an IMAGE_MISMATCH
+# or UNAPPROVED_IMAGE event.
+#
+# How to populate:
+#   After building and verifying images, run:
+#     docker inspect <container> --format '{{index .RepoDigests 0}}'
+#   or use the image ID:
+#     docker inspect <container> --format '{{.Image}}'
+#
+# Leave a node's value empty ("") to skip attestation for that node.
+# Remove a node entirely to trigger UNAPPROVED_IMAGE on every run.
+#
+# IMPORTANT: Regenerate this file after every intentional image update.
+#            Commit changes under version control with a signed commit.
+
+approved_images:
+  node1: ""   # Populate after first build: docker inspect node1 --format '{{.Image}}'
+  node2: ""
+  node3: ""
+  node4: ""

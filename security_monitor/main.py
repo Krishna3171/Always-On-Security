@@ -8,6 +8,7 @@ import subprocess
 import threading
 
 from docker_collector import run_docker_collector
+from falco_collector import run_falco_collector
 from network_collector import run_network_collector
 from threat_correlator import ThreatCorrelator
 from policy_engine import PolicyEngine
@@ -104,6 +105,7 @@ def main():
     # 4. Start pipeline threads
     t_docker = threading.Thread(target=run_docker_collector, args=(raw_queue,), name="DockerCollector", daemon=True)
     t_network = threading.Thread(target=run_network_collector, args=(raw_queue,), name="NetworkCollector", daemon=True)
+    t_falco = threading.Thread(target=run_falco_collector, args=(raw_queue,), name="FalcoCollector", daemon=True)
     
     correlator = ThreatCorrelator(raw_queue, correlator_queue)
     t_correlator = threading.Thread(target=correlator.run, name="ThreatCorrelator", daemon=True)
@@ -116,6 +118,7 @@ def main():
     
     t_docker.start()
     t_network.start()
+    t_falco.start()
     t_correlator.start()
     t_policy.start()
     t_forward.start()

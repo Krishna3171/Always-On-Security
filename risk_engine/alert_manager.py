@@ -74,17 +74,37 @@ class ThreatSignal:
 # ─────────────────────────────────────────
 
 THREAT_SEVERITY: dict[str, str] = {
-    "ROGUE_NODE":          "CRITICAL",
-    "NODE_IMPERSONATION":  "CRITICAL",
-    "DUPLICATE_NODE_ID":   "HIGH",
-    "REPLAY_ATTACK":       "HIGH",
-    "FLOOD_ATTACK":        "MEDIUM",
-    "SILENT_NODE":         "HIGH",
-    "TELEMETRY_TAMPER":    "HIGH",
-    "UNAUTH_PROCESS":      "MEDIUM",
-    "LATERAL_MOVEMENT":    "HIGH",
-    "CONFIG_TAMPER":       "HIGH",
-    "NETWORK_THREAT":      "HIGH",
+    # Protocol layer
+    "ROGUE_NODE":                 "CRITICAL",
+    "NODE_IMPERSONATION":         "CRITICAL",
+    "DUPLICATE_NODE_ID":          "HIGH",
+    "REPLAY_ATTACK":              "HIGH",
+    "FLOOD_ATTACK":               "MEDIUM",
+    "SILENT_NODE":                "HIGH",
+    "TELEMETRY_TAMPER":           "HIGH",
+    # Network layer
+    "LATERAL_MOVEMENT":           "HIGH",
+    "NETWORK_THREAT":             "HIGH",
+    # Image attestation (Improvement 1)
+    "IMAGE_MISMATCH":             "HIGH",
+    "UNAPPROVED_IMAGE":           "HIGH",
+    "IMAGE_DRIFT":                "HIGH",
+    # Runtime drift (Improvement 2)
+    "RUNTIME_DRIFT":              "HIGH",
+    # Infra config integrity (Improvement 3)
+    "CONFIG_DRIFT":               "HIGH",
+    "POLICY_TAMPER":              "CRITICAL",
+    "ALLOWLIST_TAMPER":           "CRITICAL",
+    # Docker event analytics (Improvement 4)
+    "CONTAINER_EXEC":             "MEDIUM",
+    "UNEXPECTED_EXEC":            "HIGH",
+    "SUSPICIOUS_RESTART_PATTERN": "MEDIUM",
+    "UNEXPECTED_NETWORK_ATTACH":  "HIGH",
+    # Falco integration (Improvement 5)
+    "FALCO_ALERT":                "HIGH",
+    "REVERSE_SHELL":              "CRITICAL",
+    "PRIV_ESC_ATTEMPT":           "CRITICAL",
+    "CONTAINER_ESCAPE_ATTEMPT":   "CRITICAL",
 }
 
 THREAT_ACTIONS: dict[str, str] = {
@@ -102,14 +122,45 @@ THREAT_ACTIONS: dict[str, str] = {
         "Verify node is reachable. Check for hardware failure or network partition.",
     "TELEMETRY_TAMPER":
         "Investigate node for compromise or man-in-the-middle attack.",
-    "UNAUTH_PROCESS":
-        "Kill the process. Investigate what deployed it. Check for malware.",
     "LATERAL_MOVEMENT":
         "Isolate node. Audit SSH keys. Check for credential theft.",
-    "CONFIG_TAMPER":
-        "Restore config from golden baseline. Investigate who modified the file.",
     "NETWORK_THREAT":
         "Isolate node. Inspect outbound connections, listeners, and firewall policy.",
+    # Image attestation
+    "IMAGE_MISMATCH":
+        "Stop the container immediately. Verify which image is running and who changed it.",
+    "UNAPPROVED_IMAGE":
+        "Container is running an image with no approved digest on record. Quarantine and investigate.",
+    "IMAGE_DRIFT":
+        "Image changed since last approved baseline. Rebuild from verified source.",
+    # Runtime drift
+    "RUNTIME_DRIFT":
+        "Runtime configuration has drifted from baseline. Inspect container for privilege escalation.",
+    # Infra config integrity
+    "CONFIG_DRIFT":
+        "A security infrastructure config file has been modified. Restore from version control.",
+    "POLICY_TAMPER":
+        "A security policy file has been modified. Restore immediately and audit who has write access.",
+    "ALLOWLIST_TAMPER":
+        "The node allowlist has been modified. Verify no rogue nodes have been whitelisted.",
+    # Docker event analytics
+    "CONTAINER_EXEC":
+        "An exec was issued into a workload container. Investigate who ran it and why.",
+    "UNEXPECTED_EXEC":
+        "Unexpected exec_start detected on a workload container. High risk of active intrusion.",
+    "SUSPICIOUS_RESTART_PATTERN":
+        "Container is restarting in a loop. Investigate for crashlooping malware or exploit attempt.",
+    "UNEXPECTED_NETWORK_ATTACH":
+        "Workload container was attached to an unexpected network. Isolate and investigate.",
+    # Falco
+    "FALCO_ALERT":
+        "Falco host-level security rule triggered. Review Falco event evidence.",
+    "REVERSE_SHELL":
+        "Reverse shell behaviour detected. Quarantine immediately and initiate incident response.",
+    "PRIV_ESC_ATTEMPT":
+        "Privilege escalation attempt detected. Quarantine node and audit for compromise.",
+    "CONTAINER_ESCAPE_ATTEMPT":
+        "Container escape attempt detected. Quarantine node, audit host, rotate credentials.",
 }
 
 

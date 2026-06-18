@@ -1,4 +1,35 @@
 services:
+  # ── Docker Socket Proxy (Improvement 7) ───────────────────────────
+  # Sits between infrastructure services and the Docker daemon.
+  # Only exposes the specific API endpoints required by each consumer.
+  # Prevents accidental or malicious broad socket access.
+  #
+  # Required endpoints:
+  #   host-observer:    GET /containers, GET /events, GET /info
+  #   security-monitor: GET /containers, GET /events
+  #   risk-engine:      POST /containers/{id}/pause, POST /containers/{id}/stop,
+  #                     POST /networks/{id}/disconnect, GET /containers/{id}/json
+  #
+  # All other endpoints are blocked by the proxy.
+  docker-socket-proxy:
+    image: tecnativa/docker-socket-proxy:0.1.2
+    container_name: docker-socket-proxy
+    restart: unless-stopped
+    environment:
+      # Read-only APIs needed by host-observer and security-monitor
+      CONTAINERS: 1
+      EVENTS: 1
+      INFO: 1
+      IMAGES: 1
+      NETWORKS: 1
+      # Write APIs needed by risk-engine enforcement
+      POST: 1
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      mgmt-net:
+        ipv4_address: 10.10.3.5
+
   controller:
     build:
       context: .
@@ -23,14 +54,15 @@ services:
     container_name: risk-engine
     environment:
       - ALLOWLIST_PATH=/opt/security/config/allowlist.yaml
+      - DOCKER_HOST=tcp://docker-socket-proxy:2375
     cap_add:
       - NET_ADMIN
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro
       - shared_data:/data
       - ./risk_engine/config:/opt/security/config:ro
     depends_on:
       - controller
+      - docker-socket-proxy
     networks:
       mgmt-net:
         ipv4_address: 10.10.3.11
@@ -115,9 +147,11 @@ services:
         ipv4_address: 10.10.3.31
 
   # ── Host/Cluster Observer (Infrastructure_Zone) ────────────────────
-  # External privileged observer: reads Docker stats, container top,
-  # and performs FIM via Docker's get_archive API (no exec into tenant).
+  # External observer: reads Docker stats, validates image digests,
+  # checks runtime drift, and monitors infrastructure config integrity.
+  # All detection via Docker API — no exec into tenant containers.
   # HMAC_SECRET scoped to Infrastructure_Zone only.
+  # Uses docker-socket-proxy — no direct docker.sock access.
   host-observer:
     build:
       context: .
@@ -129,11 +163,12 @@ services:
       - HMAC_SECRET=${HMAC_SECRET}
       - CONTROLLER_URL=tcp://controller:5555
       - ALLOWLIST_PATH=/opt/security/config/allowlist.yaml
+      - DOCKER_HOST=tcp://docker-socket-proxy:2375
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro
       - ./risk_engine/config:/opt/security/config:ro
     depends_on:
       - controller
+      - docker-socket-proxy
     networks:
       mgmt-net:
         ipv4_address: 10.10.3.12
@@ -150,13 +185,10 @@ services:
 
   # ── Security Monitor (Infrastructure_Zone) ─────────────────────────
   # Runs Suricata + Zeek for passive NIDS and the Python pipeline:
-  #   docker_collector → network_collector → threat_correlator →
-  #   policy_engine → event_forwarder
+  #   docker_collector → falco_collector → network_collector →
+  #   threat_correlator → policy_engine → event_forwarder
   #
-  # Requires privileged + CAP_NET_ADMIN + CAP_NET_RAW for Suricata/Zeek
-  # packet capture. This is correct: the container is Infrastructure_Zone.
-  # Python supervisor (main.py) runs as non-root appuser (UID 10001).
-  # HMAC_SECRET correctly scoped to Infrastructure_Zone only.
+  # Also tails Falco event output from the shared falco-logs volume.
   security-monitor:
     build:
       context: .
@@ -174,13 +206,16 @@ services:
       - SURICATA_INTERFACE=eth0
       - ZEEK_INTERFACE=eth0
       - ZEEK_SCRIPT=/opt/security-monitor/zeek/hpc_monitor.zeek
+      - DOCKER_HOST=tcp://docker-socket-proxy:2375
+      - FALCO_OUTPUT_FILE=/var/log/falco/events.json
     depends_on:
       - wazuh
       - controller
+      - docker-socket-proxy
     volumes:
       - shared_data:/var/log/shared
-      - /var/run/docker.sock:/var/run/docker.sock:ro
       - ./risk_engine/config:/opt/security/config:ro
+      - falco_logs:/var/log/falco:ro
     networks:
       compute-net:
         ipv4_address: 10.10.1.250
@@ -188,6 +223,36 @@ services:
         ipv4_address: 10.10.2.250
       mgmt-net:
         ipv4_address: 10.10.3.250
+
+  # ── Falco (Infrastructure_Zone) ────────────────────────────────────
+  # Host-level runtime security sensor.
+  # Runs in the Infrastructure Zone — never inside workload containers.
+  # Events are written to a shared volume read by security-monitor.
+  falco:
+    image: falcosecurity/falco-no-driver:0.39.2
+    container_name: falco
+    privileged: true
+    pid: host
+    volumes:
+      - /var/run/docker.sock:/host/var/run/docker.sock:ro
+      - /dev:/host/dev:ro
+      - /proc:/host/proc:ro
+      - /boot:/host/boot:ro
+      - /lib/modules:/host/lib/modules:ro
+      - /usr:/host/usr:ro
+      - falco_logs:/var/log/falco
+    environment:
+      - FALCO_BPF_PROBE=""
+    command: >
+      falco
+      --option "json_output=true"
+      --option "json_include_output_property=true"
+      --option "file_output.enabled=true"
+      --option "file_output.keep_alive=true"
+      --option "file_output.filename=/var/log/falco/events.json"
+    networks:
+      mgmt-net:
+        ipv4_address: 10.10.3.45
 
 networks:
   compute-net:
@@ -215,3 +280,4 @@ networks:
 
 volumes:
   shared_data:
+  falco_logs:

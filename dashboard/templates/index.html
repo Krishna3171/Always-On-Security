@@ -700,6 +700,26 @@
             <span class="integrity-label">Lateral Movements</span>
             <span class="integrity-value glow-red" id="proto-lateral">–</span>
           </div>
+          <div class="integrity-row">
+            <span class="integrity-label">Image Mismatches</span>
+            <span class="integrity-value glow-red" id="proto-image">–</span>
+          </div>
+          <div class="integrity-row">
+            <span class="integrity-label">Runtime Drift</span>
+            <span class="integrity-value glow-orange" id="proto-drift">–</span>
+          </div>
+          <div class="integrity-row">
+            <span class="integrity-label">Policy Tampers</span>
+            <span class="integrity-value glow-red" id="proto-policy">–</span>
+          </div>
+          <div class="integrity-row">
+            <span class="integrity-label">Falco Alerts</span>
+            <span class="integrity-value glow-red" id="proto-falco">–</span>
+          </div>
+          <div class="integrity-row">
+            <span class="integrity-label">Reverse Shells</span>
+            <span class="integrity-value glow-red" id="proto-revshell">–</span>
+          </div>
         </div>
       </div>
 
@@ -795,7 +815,6 @@
               <th>Node</th>
               <th>CPU%</th>
               <th>Mem%</th>
-              <th>FIM Details</th>
               <th>Event Type</th>
               <th>Bucket</th>
               <th>Score</th>
@@ -809,20 +828,6 @@
               <td><strong>{{ event.node }}</strong></td>
               <td>{{ "%.1f"|format(event.cpu_usage or 0) }}</td>
               <td>{{ "%.1f"|format(event.memory_usage or 0) }}</td>
-              <td>
-                {% if event.event_type == 'FIM_EVENT' %}
-                <span style="font-weight:600; color:var(--sev-high);">{{ event.fim_event_type or 'FIM' }}</span>
-                <div class="mono"
-                  style="font-size:0.63rem; color:var(--text-muted); margin-top:2px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:180px;"
-                  title="{{ event.file_path }}">{{ event.file_path or '—' }}</div>
-                {% if event.permissions %}
-                <div style="font-size:0.6rem; color:var(--text-dim); margin-top:1px;">perms: {{ event.permissions }}
-                </div>
-                {% endif %}
-                {% else %}
-                <span style="color:var(--text-muted); font-size:0.72rem;">—</span>
-                {% endif %}
-              </td>
               <td>
                 {% if event.event_type == 'SUSPICIOUS_ACTIVITY' %}
                 <span style="color:var(--sev-high)">⚠ {{ event.event_type }}</span>
@@ -854,7 +859,7 @@
             </tr>
             {% else %}
             <tr>
-              <td colspan="9" class="empty-state">No events yet.</td>
+              <td colspan="8" class="empty-state">No events yet.</td>
             </tr>
             {% endfor %}
           </tbody>
@@ -1153,8 +1158,13 @@
       setText('proto-floods', String(types.FLOOD_ATTACK || 0));
       setText('proto-rogue', String(types.ROGUE_NODE || 0));
       setText('proto-impersonation', String(types.NODE_IMPERSONATION || 0));
-      setText('proto-config', String(types.CONFIG_TAMPER || 0));
+      setText('proto-config', String((types.CONFIG_DRIFT || 0) + (types.POLICY_TAMPER || 0) + (types.ALLOWLIST_TAMPER || 0)));
       setText('proto-lateral', String(types.LATERAL_MOVEMENT || 0));
+      setText('proto-image', String((types.IMAGE_MISMATCH || 0) + (types.UNAPPROVED_IMAGE || 0)));
+      setText('proto-drift', String(types.RUNTIME_DRIFT || 0));
+      setText('proto-policy', String((types.POLICY_TAMPER || 0) + (types.ALLOWLIST_TAMPER || 0)));
+      setText('proto-falco', String(types.FALCO_ALERT || 0));
+      setText('proto-revshell', String(types.REVERSE_SHELL || 0));
 
       // Donut chart
       const byType = data.by_type || {};

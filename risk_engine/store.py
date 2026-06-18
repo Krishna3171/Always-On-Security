@@ -404,12 +404,27 @@ class Store:
                 ), 0) as flood_count,
                 COALESCE((
                     SELECT COUNT(*) FROM security_alerts
-                    WHERE node_id = ns.node AND threat_type = 'CONFIG_TAMPER'
+                    WHERE node_id = ns.node
+                    AND threat_type IN ('CONFIG_DRIFT','POLICY_TAMPER','ALLOWLIST_TAMPER')
                 ), 0) as config_tamper_count,
                 COALESCE((
                     SELECT COUNT(*) FROM security_alerts
                     WHERE node_id = ns.node AND threat_type = 'LATERAL_MOVEMENT'
-                ), 0) as lateral_movement_count
+                ), 0) as lateral_movement_count,
+                COALESCE((
+                    SELECT COUNT(*) FROM security_alerts
+                    WHERE node_id = ns.node
+                    AND threat_type IN ('IMAGE_MISMATCH','UNAPPROVED_IMAGE','IMAGE_DRIFT')
+                ), 0) as image_alert_count,
+                COALESCE((
+                    SELECT COUNT(*) FROM security_alerts
+                    WHERE node_id = ns.node AND threat_type = 'RUNTIME_DRIFT'
+                ), 0) as runtime_drift_count,
+                COALESCE((
+                    SELECT COUNT(*) FROM security_alerts
+                    WHERE node_id = ns.node
+                    AND threat_type IN ('FALCO_ALERT','REVERSE_SHELL','PRIV_ESC_ATTEMPT','CONTAINER_ESCAPE_ATTEMPT')
+                ), 0) as falco_alert_count
             FROM node_status ns
             LEFT JOIN node_identity ni ON ni.node = ns.node
             ORDER BY ns.node ASC

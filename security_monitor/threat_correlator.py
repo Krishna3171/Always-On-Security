@@ -75,17 +75,22 @@ class ThreatCorrelator:
                 dq.append((now, event))
                 log.debug(f"Cached Docker event for {node}: {event.get('action')}")
                 
-            elif source in ["suricata", "zeek"]:
-                # Try to map IP to node name
-                src = event.get("src_ip", "")
-                dst = event.get("dest_ip", "")
-                
-                node = self.resolve_node(src)
+            elif source in ["suricata", "zeek", "falco"]:
+                # Try to map IP or container name to node name
+                src  = event.get("src_ip", "") or event.get("node_id", "")
+                dst  = event.get("dest_ip", "")
+
+                # Falco already provides node_id as container name
+                if source == "falco":
+                    node = event.get("node_id", "unknown")
+                    if node not in ["node1", "node2", "node3", "node4", "security-monitor"]:
+                        node = self.resolve_node(src) if src else "unknown"
+                else:
+                    node = self.resolve_node(src)
+                    if node == "unknown":
+                        node = self.resolve_node(dst)
+
                 if node == "unknown":
-                    node = self.resolve_node(dst)
-                    
-                if node == "unknown":
-                    # Cannot map to any known tenant node, log and skip or forward as infrastructure alert
                     log.warning(f"Could not map IP {src} -> {dst} to any tenant node.")
                     node = "security-monitor"
                     
