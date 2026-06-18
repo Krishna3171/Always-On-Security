@@ -228,9 +228,12 @@ After: a 5-module Python pipeline supervised by `main.py`:
 
 The `policy_engine` can take immediate action (stop, pause, or network-isolate) for critical signals like `ROGUE_NODE`, `NODE_IMPERSONATION`, or `CONFIG_TAMPER` — bypassing the cumulative scoring path entirely.
 
-#### `controller/` — unchanged in logic, now correctly fed
+#### `controller/` — enhanced security logic with persistent blacklist
 
-The six-gate security validator is the same. What changed is where its input comes from: previously node agents (tenant-zone); now only infrastructure-zone services (Host Observer and Security Monitor), neither of which holds tenant-accessible secrets.
+While the core six-gate security validator remains, the Controller has been hardened to include a **persistent rogue node blacklist**:
+- **Dynamic Blacklisting:** When an unauthorized node name (not in `allowlist.yaml`) sends a message, it triggers a `ROGUE_NODE` alert and is immediately appended to a persistent blacklist file (`/data/rogue_blacklist.yaml`).
+- **Alert Flood & DoS Mitigation:** Subsequent telemetry messages from blacklisted nodes are dropped silently at the edge (pre-check) without generating additional alert records or forwarding them, preventing log flooding and denial-of-service on the central processing pipeline.
+- **Trusted Input Sources:** All valid telemetry is now fed only from the trusted Host Observer and Security Monitor in the Infrastructure Zone, rather than from agents running inside untrusted tenant containers.
 
 #### `docker-compose.yml` — trust boundary enforced in configuration
 
@@ -305,7 +308,7 @@ host-observer:
 | Suspicious process (denylist) | Host Observer | Risk Engine / Policy Engine | `container.top()` vs `process_policy.yaml` |
 | Config file tamper (FIM) | Host Observer | Risk Engine / Policy Engine | `container.get_archive()` SHA-256 vs baseline |
 | HMAC failure (telemetry tamper) | Controller | Controller (drop) + Risk Engine (alert) | HMAC-SHA256 verify |
-| Rogue node (unknown machine_id) | Controller | Policy Engine (fast-path stop) | Allowlist check |
+| Rogue node (unknown node name) | Controller | Policy Engine (fast-path stop) | Allowlist check + persistent blacklist |
 | Replay attack | Controller | Controller (drop) + Risk Engine (alert) | Sliding window + seq monotonicity |
 | Message flooding | Controller | Controller (alert) | Rate window counter |
 | Node impersonation | Controller | Policy Engine (fast-path stop) | machine_id change detection |
@@ -504,7 +507,7 @@ docker run --rm --network always-on-security_mgmt-net \
   always-on-security-node1
 ```
 
-The Controller rejects the message (node not in allowlist) and forwards a `ROGUE_NODE` alert to the Risk Engine. The Policy Engine triggers a fast-path stop.
+The Controller rejects the message (node not in allowlist), dynamically appends the node name to `/data/rogue_blacklist.yaml`, and forwards a single `ROGUE_NODE` alert to the Risk Engine (where the Policy Engine triggers a fast-path stop). Any subsequent messages from this rogue node are silently dropped by the Controller to prevent alert flooding.
 
 ### Network Threat Tests
 
