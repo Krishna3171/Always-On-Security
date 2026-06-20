@@ -228,11 +228,22 @@ services:
   # Host-level runtime security sensor.
   # Runs in the Infrastructure Zone — never inside workload containers.
   # Events are written to a shared volume read by security-monitor.
+  #
+  # falcoctl auto-selects modern_ebpf driver (visible in logs).
+  # Config is passed via FALCO_* env vars — the entrypoint wrapper
+  # does not accept --modern-bpf as a CLI flag.
   falco:
-    image: falcosecurity/falco-no-driver:0.39.2
+    image: falcosecurity/falco:0.39.2
     container_name: falco
     privileged: true
     pid: host
+    environment:
+      - FALCO_DRIVER_CHOICE=modern_ebpf
+      - FALCO_JSON_OUTPUT=true
+      - FALCO_FILE_OUTPUT_ENABLED=true
+      - FALCO_FILE_OUTPUT_FILENAME=/var/log/falco/events.json
+      - FALCO_FILE_OUTPUT_KEEP_ALIVE=true
+      - FALCO_JSON_INCLUDE_OUTPUT_PROPERTY=true
     volumes:
       - /var/run/docker.sock:/host/var/run/docker.sock:ro
       - /dev:/host/dev:ro
@@ -240,16 +251,8 @@ services:
       - /boot:/host/boot:ro
       - /lib/modules:/host/lib/modules:ro
       - /usr:/host/usr:ro
+      - /sys/kernel/btf/vmlinux:/sys/kernel/btf/vmlinux:ro
       - falco_logs:/var/log/falco
-    environment:
-      - FALCO_BPF_PROBE=""
-    command: >
-      falco
-      --option "json_output=true"
-      --option "json_include_output_property=true"
-      --option "file_output.enabled=true"
-      --option "file_output.keep_alive=true"
-      --option "file_output.filename=/var/log/falco/events.json"
     networks:
       mgmt-net:
         ipv4_address: 10.10.3.45
