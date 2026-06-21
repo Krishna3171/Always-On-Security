@@ -32,26 +32,11 @@ class WeightedScorer:
         current_score: float,
         multiplier: float = 1.0,
     ) -> tuple[float, float, str]:
-        import time
-        if not hasattr(self, 'fim_hold_until'):
-            self.fim_hold_until = {}
-
         if not matches:
-            # If we are under a FIM decay hold, skip decay
-            if node in self.fim_hold_until and time.time() < self.fim_hold_until[node]:
-                bucket = self._bucket(current_score)
-                return 0.0, round(current_score, 4), bucket
-
-            # Risk decay for normal events (Sukhraj's feature)
+            # Risk decay for idle nodes
             new_cumulative = max(0.0, current_score - self.decay_rate)
             bucket = self._bucket(new_cumulative)
             return 0.0, round(new_cumulative, 4), bucket
-
-        # Check if any matched rule is FIM-related
-        is_fim = any(rule_id.startswith("FIM_") for rule_id, _, _ in matches)
-        if is_fim:
-            # Set decay hold for 300 seconds (5 minutes)
-            self.fim_hold_until[node] = time.time() + 300
 
         ac = self.asset_criticality(node)
         # Take the highest-scoring rule to avoid double-counting
@@ -70,10 +55,13 @@ class WeightedScorer:
         return round(event_score, 4), round(new_cumulative, 4), bucket
 
     def _bucket(self, score: float) -> str:
-        # We rely on dictionary insertion order (silent, auto, human).
-        # By only checking the upper bound (+1 to close the decimal gap), we prevent floats from falling through.
+        # FIX #11: Use inclusive upper-bound comparison (score <= hi) instead of
+        # the previous (score < hi + 1.0) fudge.  The old logic caused score=31.0
+        # to match both 'silent [0,30]' (31 < 31) → false, then 'auto [31,70]'
+        # (31 < 71) → true, which was correct by accident but fragile.
+        # With score=30.9 the old check passed silent (30.9 < 31) leaving no
+        # headroom for float drift.  Explicit <= is unambiguous.
         for name, bounds in self.buckets.items():
-            hi = bounds[1]
-            if score < hi + 1.0:
+            if score <= bounds[1]:
                 return name
-        return "quarantine"  # score >= 101.0
+        return "quarantine"  # score > 100

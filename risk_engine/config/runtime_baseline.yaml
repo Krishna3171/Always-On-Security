@@ -1,0 +1,59 @@
+# Runtime baseline for workload containers.
+#
+# The Host Observer captures live Docker inspect data and compares it against
+# this baseline every 5 seconds. Deviations generate RUNTIME_DRIFT events.
+#
+# Fields per node:
+#   user          - expected Unix user inside the container (empty = any)
+#   cap_add       - expected additional capabilities ([] = none beyond default)
+#   binds         - expected bind mounts ([] = none)
+#   networks      - expected network attachments (sorted list of network names)
+#   restart_policy - "<name>:<max_retry_count>" e.g. "no:0" or "on-failure:3"
+#   security_opts - expected Docker security options ([] = none)
+#
+# How to populate:
+#   Run: python3 scripts/capture_runtime_baseline.py
+#   This inspects all allowed nodes and writes their current state here.
+#
+# IMPORTANT: Regenerate after any intentional docker-compose.yml change.
+
+baseline:
+  node1:
+    user: "10001"
+    cap_add: []
+    binds: []
+    networks:
+      - always-on-security_compute-net
+      - always-on-security_mgmt-net
+    restart_policy: "no:0"
+    security_opts: []
+
+  node2:
+    user: "10001"
+    cap_add: []
+    binds: []
+    networks:
+      - always-on-security_compute-net
+      - always-on-security_mgmt-net
+    restart_policy: "no:0"
+    security_opts: []
+
+  node3:
+    user: "10001"
+    cap_add: []
+    binds: []
+    networks:
+      - always-on-security_compute-net
+      - always-on-security_mgmt-net
+    restart_policy: "no:0"
+    security_opts: []
+
+  node4:
+    user: "10001"
+    cap_add: []
+    binds: []
+    networks:
+      - always-on-security_mgmt-net
+      - always-on-security_storage-net
+    restart_policy: "no:0"
+    security_opts: []

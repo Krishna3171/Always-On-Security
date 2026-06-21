@@ -1,302 +1,475 @@
-# Always-On-Security
+# Always-On Security
 
-A distributed, container-based security monitoring simulation that demonstrates real-time anomaly detection, cumulative risk scoring, automated quarantine, and live dashboard visualization.
-
-*Note: This project has been significantly enhanced with an **Advanced Security Layer** providing cryptographic node identity, replay protection, and node-level threat detection.*
+A distributed, container-based HPC security monitoring platform that simulates real-time threat detection, cumulative risk scoring, automated enforcement, and live SOC dashboard visualization — architected around the trust-boundary principles of air-gapped, production HPC environments.
 
 ---
 
-## Architecture Overview
+## Table of Contents
 
-The system is built as a multi-container Docker application with the following layers:
+1. [What This Project Does](#1-what-this-project-does)
+2. [Architecture](#2-architecture)
+3. [Component Reference](#3-component-reference)
+4. [Detection Coverage](#4-detection-coverage)
+5. [Build-Time Security Pipeline](#5-build-time-security-pipeline)
+6. [Getting Started](#6-getting-started)
+7. [Testing & Simulation](#7-testing--simulation)
+8. [Removed Components](#8-removed-components)
+9. [Known Gaps](#9-known-gaps)
 
-1. **Layer 1: Node Agents (`node_agent/`)** — Dual-threaded edge agents that collect system telemetry (CPU, memory, process count) while simulating workload states. Includes a built-in threat simulator for testing.
-2. **Layer 2: Event Bus & Durability (`controller/`)** — A lightweight message forwarder that receives telemetry via ZeroMQ, stamps events with a sequential offset, and persists state atomically for crash recovery.
-3. **Layer 3: Risk Engine (`risk_engine/`)** — A stateless Python microservice that assesses risk. Features context-aware threshold checks, risk decay (self-healing), cross-node correlation, heartbeat monitoring, and node-side network threat alerts.
-4. **Layer 4: Auto-Remediation (`risk_engine/router.py`)** — Monitors risk levels and routes decisions into buckets (silent, auto, human, quarantine). Initiates container-based node isolation via the Docker API.
-5. **Layer 5: Visibility & Alerting (`dashboard/`, `wazuh/`, `security_monitor/`)** — A Flask-based web dashboard, a mock Wazuh SIEM manager, and a dedicated security monitor container running Suricata + Zeek on the Docker segments.
+---
+
+## 1. What This Project Does
+
+Always-On Security is a multi-container Docker simulation of an HPC cluster security stack. It models the kind of always-on, host-level security instrumentation found in HPE/SGI clusters and Slurm-managed compute environments.
+
+The system continuously monitors tenant workload nodes and enforces security policy without any agent running inside the monitored containers. When a threat is detected — a runtime configuration change, a mismatched image digest, a Falco-observed privilege escalation, a Suricata network alert, or a protocol attack — the platform scores it, correlates it across signals and nodes, and automatically responds: pausing, stopping, or network-isolating the affected container.
+
+**Core design invariants (non-negotiable):**
+
+- Tenant workload containers are untrusted
+- No security agents run inside workload containers
+- No secrets are exposed to workload containers
+- All detection, correlation, and enforcement occurs from the Infrastructure Zone
+- No enforcement action modifies files or kills processes inside a tenant container
+
+---
+
+## 2. Architecture
+
+### Trust Zone Diagram
 
 ```
-                ┌──────────────────────────────────┐
-                │          RISK ENGINE             │
-                │  YAML Rules & Scoring Pipeline   │
-                │  Heartbeat & Correlation         │
-                │  Remediation Router              │──► Docker API (Quarantine)
-                │  DB Writer                       │──► SQLite
-                └───────────────▲──────────────────┘
-                                │ ZMQ :5556
-                ┌───────────────┴──────────────────┐
-                │          CONTROLLER              │
-                │  Message Forwarder & Offsets     │
-                └───────────────▲──────────────────┘
-                                │ ZMQ :5555
-                ┌───────────────┴──────────────────┐
-                │          NODE AGENTS             │  ×4 (compute and storage nodes)
-                │  Telemetry & Threat Simulator    │
-                └──────────────────────────────────┘
+  INFRASTRUCTURE ZONE
+  ┌──────────────────────────────────────────────────────────────────────────┐
+  │                                                                          │
+  │  ┌─────────────────────────┐         ┌────────────────────────────────┐ │
+  │  │     HOST OBSERVER       │         │       SECURITY MONITOR         │ │
+  │  │  (cluster_observer.py)  │         │                                │ │
+  │  │                         │         │  docker_collector  ──┐         │ │
+  │  │  Docker stats API       │         │  falco_collector   ──┤         │ │
+  │  │  Image attestation      │         │  network_collector ──┤         │ │
+  │  │  Runtime drift detect.  │         │  threat_correlator   │         │ │
+  │  │  Infra config integrity │         │  policy_engine   ────┤         │ │
+  │  │                         │         │  event_forwarder ────┘         │ │
+  │  │  Via docker-socket-proxy│         │                                │ │
+  │  └──────────┬──────────────┘         │  Suricata (NIDS, signatures)   │ │
+  │             │                        │  Zeek (behavioural network)    │ │
+  │             │                        └──────────────┬─────────────────┘ │
+  │             │                                       │                   │
+  │  ┌──────────┴──────────────┐         ┌─────────────┴──────────────────┐ │
+  │  │        FALCO            │         │   DOCKER SOCKET PROXY          │ │
+  │  │  Host-level runtime     │         │   (tecnativa/docker-socket-    │ │
+  │  │  security sensor        │         │    proxy)                      │ │
+  │  │  pid: host, privileged  │         │   10.10.3.5:2375               │ │
+  │  │  Writes → falco_logs/   │         │   Allowlists API endpoints     │ │
+  │  └─────────────────────────┘         └────────────────────────────────┘ │
+  │             │                                                            │
+  │             │ ZMQ :5555 (HMAC-signed)                                    │
+  │             ▼                                                            │
+  │  ┌──────────────────────────┐                                           │
+  │  │        CONTROLLER        │                                           │
+  │  │                          │                                           │
+  │  │  1. HMAC verify          │                                           │
+  │  │  2. Rogue node           │                                           │
+  │  │  3. Replay guard         │                                           │
+  │  │  4. Flood guard          │                                           │
+  │  │  5. Impersonation detect │                                           │
+  │  │  6. Duplicate ID         │                                           │
+  │  └──────────┬───────────────┘                                           │
+  │             │ ZMQ :5556                                                 │
+  │             ▼                                                            │
+  │  ┌──────────────────────────┐                                           │
+  │  │       RISK ENGINE        │                                           │
+  │  │                          │                                           │
+  │  │  Weighted scoring        │──► SQLite (events.db)                    │
+  │  │  Risk decay              │                                           │
+  │  │  Cross-node correlation  │                                           │
+  │  │  Multi-signal correlation│                                           │
+  │  │  Heartbeat monitor       │                                           │
+  │  │  Enforcement router      │──► Docker Socket Proxy                   │
+  │  │  Alert manager           │──► Wazuh (UDP syslog)                    │
+  │  └──────────────────────────┘                                           │
+  │                                                                          │
+  │  ┌──────────────────────────┐                                           │
+  │  │       DASHBOARD          │                                           │
+  │  │  Flask + SQLite          │                                           │
+  │  │  localhost:5000          │                                           │
+  │  └──────────────────────────┘                                           │
+  └──────────────────────────────────────────────────────────────────────────┘
 
-                ┌───────────────┐  ┌───────────────┐
-                │   DASHBOARD   │  │     WAZUH     │
-                │ localhost:5000│  │ Mock SIEM :514│
-                └───────────────┘  └───────────────┘
+  WORKLOAD ZONE  (no secrets · no agents · no root · no docker.sock)
+  ┌──────────────────────────────────────────────────────────────────────────┐
+  │  node1       node2       node3       node4                               │
+  │  UID 10001   UID 10001   UID 10001   UID 10001                           │
+  │  (customer workload only — no psutil, no inotify, no ZMQ, no HMAC)      │
+  └──────────────────────────────────────────────────────────────────────────┘
 
-                ┌──────────────────────────────────┐
-                │ SECURITY MONITOR                 │
-                │ Suricata + Zeek + Filebeat       │
-                │ compute-net / storage-net / mgmt │
-                └──────────────────────────────────┘
+  NETWORK SEGMENTS
+  compute-net   10.10.1.0/24   east-west node traffic  (internal: true)
+  storage-net   10.10.2.0/24   shared storage traffic  (internal: true)
+  mgmt-net      10.10.3.0/24   control plane           (internal: true)
+  host-access   bridge         dashboard port only     (non-internal)
 ```
 
----
+### Data Flow
 
-## Key Features
-
-* **Cumulative Risk Scoring & Self-Healing:** The controller maintains a cumulative risk score for each node. If anomalies cease, the risk score decays slowly back to 0. Accounts for asset criticality.
-* **Heartbeat Monitor:** Detects silent node failures. If a node fails to send telemetry for 30 seconds, it is marked as unresponsive.
-* **Cross-Node Correlation:** Detects coordinated attacks hitting 3+ nodes simultaneously and applies a risk multiplier.
-* **Automated Quarantine:** Once a node's cumulative risk score hits or exceeds `100` (quarantine bucket), the system automatically stops the compromised node's container via the Docker API.
-* **Mock Wazuh Integration:** A simulated Wazuh SIEM manager receives and displays security alerts via UDP when a node is quarantined.
-
----
-
-## Security Detection Rules
-
-| Rule | Trigger Condition | Risk Increment |
-| :--- | :--- | :--- |
-| **High CPU** | CPU > 10% | `+20` risk points |
-| **High Memory** | Memory > 50% | `+20` risk points |
-| **Too Many Processes** | Process count > 300 | `+25` risk points |
-| **Suspicious Process** | Binary name match (e.g. `nmap`, `hydra`, `nc`, `stress`) | `+40` risk points |
-| **Network Threat** | Suspicious TCP egress, unexpected listeners, or high fan-out | `+55` risk points |
-
----
-
-## Suspicious Activity Detection
-
-Currently, a node is marked as suspicious if it exhibits one or more of the following:
-
-* High CPU usage
-* High memory usage
-* Excessive number of running processes
-* Suspicious process names (e.g., `stress`, `nmap`, `hydra`, `netcat`)
-
-**Additionally, the system now covers advanced Node-Related Threats:**
-* **Rogue Node Detection**: Rejects telemetry from unauthorized machine IDs.
-* **Replay Attacks**: Blocks duplicated, previously seen messages.
-* **Message Flooding**: Rate limits excessive telemetry from a single node.
-* **Config Tampering**: Hashes critical files (e.g. `/etc/hosts`) against a baseline.
-* **Lateral Movement**: Detects unexpected outbound SSH connections.
-* **Network Threat Detection**: Flags suspicious TCP egress, unexpected listening ports, and fan-out spikes that do not fit the cluster network profile.
-* **Telemetry Tampering**: Validates cryptographic HMAC-SHA256 signatures on all messages.
-
-## Network Simulation
-
-The Docker topology is split into three isolated segments:
-
-* `compute-net` for MPI-like east-west communication
-* `storage-net` for shared storage access
-* `mgmt-net` for control-plane and monitoring traffic
-
-The `security-monitor` container is attached to all three segments and is intended to inspect the Docker bridge/veth interfaces directly. Suricata handles scan and protocol-abuse detections, while Zeek handles whitelist violations, connection-graph tracking, and baseline deviation notices. Filebeat is configured to ship the generated logs into the SIEM pipeline.
-
-### Baseline and Detection Artifacts
-
-* `scripts/compute_baseline.py` reads Zeek conn logs and writes `baselines/baseline.json`
-* `scripts/beaconing_detector.py` reads conn logs and emits beaconing alerts to JSON
-* `scripts/enforce_segment_iptables.sh` applies host-side segment boundaries with iptables
-
-These detections are rule-based and serve as a proof-of-concept implementation.
-
----
-
-## Project Structure
-
-```text
-Always-On-Security/
-│
-├── controller/                 # Layer 2: Message Forwarder
-├── risk_engine/                # Layer 3/4: Central Processing & Remediation
-│   ├── config/                 # YAML configuration (rules, thresholds)
-│   └── ...python modules
-├── dashboard/
-│   ├── app.py
-│   ├── Dockerfile
-│   ├── requirements.txt
-│   └── templates/
-│       └── index.html
-│
-├── security_monitor/
-│   ├── Dockerfile
-│   ├── start.sh
-│   ├── filebeat.yml
-│   ├── suricata/
-│   └── zeek/
-│
-├── node_agent/
-│   ├── agent.py
-│   ├── Dockerfile
-│   └── requirements.txt
-│
-├── scripts/
-│   ├── compute_baseline.py
-│   ├── beaconing_detector.py
-│   └── enforce_segment_iptables.sh
-│
-├── wazuh/
-│   ├── wazuh.py
-│   └── Dockerfile
-│
-├── baselines/
-├── data/                       # Shared SQLite Database
-│
-├── docker-compose.yml
-└── .gitignore
+```
+  Docker Daemon
+       │
+       ├──► docker-socket-proxy :2375
+       │         │
+       │         ├── host-observer   (stats, inspect, image digest)
+       │         ├── security-monitor (event stream)
+       │         └── risk-engine     (pause, stop, network disconnect)
+       │
+       └──► falco (privileged, pid:host)
+                 │
+                 └── falco_logs volume ──► security-monitor/falco_collector
 ```
 
 ---
 
-## Prerequisites
+## 3. Component Reference
 
-Install the following:
+### Service Map
 
-### Ubuntu / Linux (Native)
+| Container | Zone | IP (mgmt-net) | Key Capabilities |
+|---|---|---|---|
+| `docker-socket-proxy` | Infrastructure | 10.10.3.5 | Proxies docker.sock; allowlists endpoints |
+| `controller` | Infrastructure | 10.10.3.10 | HMAC_SECRET, config:ro |
+| `risk-engine` | Infrastructure | 10.10.3.11 | NET_ADMIN, via socket proxy |
+| `dashboard` | Infrastructure | 10.10.3.20 | shared_data:ro, port 5000 |
+| `host-observer` | Infrastructure | 10.10.3.12 | HMAC_SECRET, via socket proxy |
+| `wazuh` | Infrastructure | 10.10.3.40 | mock SIEM (UDP 5514) |
+| `falco` | Infrastructure | 10.10.3.45 | privileged, pid:host |
+| `security-monitor` | Infrastructure | 10.10.3.250 | privileged, NET_ADMIN, NET_RAW |
+| `node1–node4` | Workload | 10.10.3.21–31 | None — unprivileged appuser (UID 10001) |
+
+### Network Segments
+
+| Network | Subnet | Notes |
+|---|---|---|
+| `compute-net` | 10.10.1.0/24 | East-west node traffic; `internal: true` |
+| `storage-net` | 10.10.2.0/24 | Shared storage; `internal: true` |
+| `mgmt-net` | 10.10.3.0/24 | Control plane + monitoring; `internal: true` |
+| `host-access` | bridge | Dashboard port publication only |
+
+`security-monitor` is attached to all three segments for full-spectrum traffic inspection.
+
+### Risk Engine Config (`risk_engine/config/`)
+
+| File | Purpose |
+|---|---|
+| `rules.yaml` | Rule definitions with severity and blast-radius weights |
+| `thresholds.yaml` | Score thresholds for enforcement buckets |
+| `allowlist.yaml` | Authorised node names and security parameters |
+| `node_criticality.yaml` | Per-node criticality multipliers |
+| `fast_path_policy.yaml` | Immediate pre-score enforcement rules |
+| `approved_images.yaml` | Expected image digests per workload node |
+| `runtime_baseline.yaml` | Expected runtime config (user, caps, networks, mounts) |
+
+### Host Observer — Detection Subsystems
+
+#### 1. Image Attestation
+Reads the running container's image ID and repo digests via Docker inspect. Compares against `approved_images.yaml`. Generates `IMAGE_MISMATCH` or `UNAPPROVED_IMAGE` events with full evidence. No container access required.
+
+#### 2. Runtime Drift Detection
+Extracts live container config from Docker inspect: user, capabilities, bind mounts, network attachments, restart policy, security options. Compares against `runtime_baseline.yaml`. Generates `RUNTIME_DRIFT` events with a per-field diff. Catches: container suddenly running as root, unexpected capability added, unexpected volume mount or network connection.
+
+#### 3. Infrastructure Config Integrity
+Computes SHA-256 of infrastructure-owned YAML files at startup. Rechecks every 30 seconds. Generates `CONFIG_DRIFT`, `POLICY_TAMPER`, or `ALLOWLIST_TAMPER` events. Only monitors security infrastructure files — never customer files.
+
+### Security Monitor — Pipeline Modules
+
+| Module | Input | Output |
+|---|---|---|
+| `docker_collector.py` | Docker event stream | exec, restart loop, rename, network events |
+| `falco_collector.py` | `/var/log/falco/events.json` | FALCO_ALERT, REVERSE_SHELL, PRIV_ESC_ATTEMPT, CONTAINER_ESCAPE_ATTEMPT |
+| `network_collector.py` | Suricata EVE JSON, Zeek notice/conn logs | NETWORK_THREAT, behavioural notices |
+| `threat_correlator.py` | All sources above | Joins events; escalates correlated threats |
+| `policy_engine.py` | Correlated events | Fast-path enforcement before scoring |
+| `event_forwarder.py` | Policy-passed events | HMAC-signed ZMQ send to controller |
+
+### Risk Engine — Correlation
+
+Two correlation modes run in parallel:
+
+**Cross-node correlation** (original): same rule fires on ≥3 distinct nodes within 600s → 1.5× score multiplier.
+
+**Multi-signal correlation** (new): specific combinations of threat types on the same node within a configurable window trigger higher-confidence findings:
+
+| Combination | Window | Multiplier | Label |
+|---|---|---|---|
+| REVERSE_SHELL + NETWORK_THREAT | 120s | 2.5× | High Confidence Compromise |
+| FALCO_ALERT + RUNTIME_DRIFT + NETWORK_THREAT | 300s | 3.0× | Critical Multi-Signal Risk |
+| CONTAINER_EXEC + PRIV_ESC_ATTEMPT | 180s | 2.5× | Active Attack Chain |
+| IMAGE_MISMATCH + RUNTIME_DRIFT | 600s | 2.0× | Deployment Tamper |
+| ALLOWLIST_TAMPER + ROGUE_NODE | 600s | 3.0× | Coordinated Intrusion |
+| CONTAINER_ESCAPE_ATTEMPT + PRIV_ESC_ATTEMPT | 120s | 3.0× | Container Escape |
+
+### Docker Socket Proxy
+
+All infrastructure services that previously mounted `/var/run/docker.sock` directly now talk to `docker-socket-proxy:2375` via `DOCKER_HOST=tcp://docker-socket-proxy:2375`. The proxy allowlists only the API endpoints each service actually needs:
+
+| API | Enabled | Consumers |
+|---|---|---|
+| `GET /containers/*` | ✅ | host-observer, security-monitor, risk-engine |
+| `GET /events` | ✅ | security-monitor |
+| `GET /images/*` | ✅ | host-observer |
+| `GET /networks/*` | ✅ | risk-engine |
+| `POST /containers/*/pause` | ✅ | risk-engine |
+| `POST /containers/*/stop` | ✅ | risk-engine |
+| `POST /networks/*/disconnect` | ✅ | risk-engine |
+| All other endpoints | ❌ | — |
+
+---
+
+## 4. Detection Coverage
+
+### Event Types and Scoring
+
+| Event Type | Source | Severity | Blast Radius | Notes |
+|---|---|---|---|---|
+| `ROGUE_NODE` | Controller | 50 | 30 | Node not in allowlist |
+| `NODE_IMPERSONATION` | Controller | 60 | 40 | machine_id changed |
+| `REPLAY_ATTACK` | Controller | 45 | 25 | Stale/duplicate message |
+| `FLOOD_ATTACK` | Controller | 30 | 15 | Rate limit exceeded |
+| `TELEMETRY_TAMPER` | Controller | 50 | 30 | HMAC failure |
+| `SILENT_NODE` | Risk Engine | 40 | 20 | Heartbeat timeout |
+| `LATERAL_MOVEMENT` | Security Monitor | 55 | 35 | SSH anomaly |
+| `NETWORK_THREAT` | Security Monitor | 55 | 35 | Suricata/Zeek alert |
+| `IMAGE_MISMATCH` | Host Observer | 65 | 40 | Digest mismatch vs approved_images.yaml |
+| `UNAPPROVED_IMAGE` | Host Observer | 55 | 35 | No approved digest on record |
+| `RUNTIME_DRIFT` | Host Observer | 60 | 40 | Cap/volume/network/user drift |
+| `CONFIG_DRIFT` | Host Observer | 55 | 35 | Infra config file modified |
+| `POLICY_TAMPER` | Host Observer | 65 | 45 | Security policy file modified |
+| `ALLOWLIST_TAMPER` | Host Observer | 70 | 50 | Allowlist file modified |
+| `CONTAINER_EXEC` | Security Monitor | 45 | 25 | exec_create on workload container |
+| `UNEXPECTED_EXEC` | Security Monitor | 55 | 35 | exec_start on workload container |
+| `SUSPICIOUS_RESTART_PATTERN` | Security Monitor | 40 | 20 | ≥5 restarts in 120s |
+| `UNEXPECTED_NETWORK_ATTACH` | Security Monitor | 50 | 30 | Network connect/disconnect |
+| `FALCO_ALERT` | Security Monitor | 50 | 30 | Generic Falco rule match |
+| `REVERSE_SHELL` | Security Monitor | 80 | 60 | Falco reverse shell rule |
+| `PRIV_ESC_ATTEMPT` | Security Monitor | 70 | 50 | Falco privilege escalation rule |
+| `CONTAINER_ESCAPE_ATTEMPT` | Security Monitor | 90 | 70 | Falco container escape rule |
+
+### Enforcement Actions
+
+| Action | Trigger | Mechanism |
+|---|---|---|
+| **Stop container** | Score ≥ quarantine, IMAGE_MISMATCH, UNAPPROVED_IMAGE, REVERSE_SHELL, CONTAINER_ESCAPE_ATTEMPT | `container.stop()` via Docker API |
+| **Pause container** | Lateral movement, RUNTIME_DRIFT, PRIV_ESC_ATTEMPT | `container.pause()` via Docker API |
+| **Network isolate** | Fan-out, UNEXPECTED_NETWORK_ATTACH, POLICY_TAMPER | `network.disconnect()` compute-net + storage-net |
+| **Wazuh alert** | Any auto/human/quarantine bucket event | UDP syslog to 10.10.3.40:5514 |
+
+No enforcement action executes code, modifies files, or kills processes inside a tenant container.
+
+### Risk Scoring Buckets
+
+| Bucket | Score Range | Action |
+|---|---|---|
+| `silent` | 0–30 | Monitor only |
+| `auto` | 31–70 | Wazuh alert + auto-remediation |
+| `human` | 71–100 | Pause + human review |
+| `quarantine` | > 100 | Stop + network isolate |
+
+Scores decay at 5.0 per cycle when no rules match (self-healing after threat activity subsides).
+
+---
+
+## 5. Build-Time Security Pipeline
+
+Two GitHub Actions workflows enforce shift-left security on every push and pull request.
+
+### Pipeline Stages
+
+```
+Push / PR
+    │
+    ├── Stage 1 — Blocking, serial
+    │   ├── secret-detection    GitLeaks full history scan
+    │   └── yaml-validation     yamllint + PyYAML safe_load on all configs
+    │
+    ├── Stage 2 — Blocking, parallel
+    │   ├── sast-bandit         Python SAST; blocks on HIGH severity
+    │   ├── sast-semgrep        p/python + p/secrets + p/owasp-top-ten
+    │   └── shellcheck          Shell script linting (advisory)
+    │
+    ├── Stage 3 — Blocking, parallel
+    │   └── sca-pip-audit       CVE scan across all requirements.txt files
+    │
+    ├── Stage 4 — Advisory, parallel
+    │   ├── hadolint            Dockerfile best-practice lint
+    │   ├── checkov             docker-compose.yml IaC scan
+    │   └── trivy               Filesystem CVE scan (blocks on CRITICAL)
+    │
+    └── Security Gate           Final pass/fail for branch protection
+```
+
+On every merge to `main`, a second workflow (`sbom.yml`) generates a software bill of materials using Syft.
+
+---
+
+## 6. Getting Started
+
+### Prerequisites
 
 ```bash
+# Ubuntu / Debian
 sudo apt update
 sudo apt install git docker.io docker-compose-plugin -y
-```
 
-### Windows with WSL (Docker Desktop)
+# Arch
+sudo pacman -S docker docker-compose
 
-Install [Docker Desktop for Windows](https://www.docker.com/products/docker-desktop/) and enable WSL integration in:
-`Settings → Resources → WSL Integration → Enable your distro`
-
-### Verify Installation
-
-```bash
+# Verify
 docker --version
 docker compose version
-git --version
 ```
 
----
-
-## Clone Repository
+### Setup
 
 ```bash
 git clone <repository-url>
 cd Always-On-Security
+cp .env.example .env          # edit HMAC_SECRET if desired
 ```
 
----
-
-## Start the System
-
-Before starting the system for the first time, you must generate the baseline configuration hashes and the `.env` file containing the HMAC secret:
+After first `docker compose up`, capture the runtime and image baselines from a known-good state:
 
 ```bash
-python3 generate_baseline.py
+# Capture image digests
+python3 scripts/capture_approved_images.py
+
+# Capture runtime config baseline
+python3 scripts/capture_runtime_baseline.py
 ```
 
-Build and start all services:
+Commit the updated `risk_engine/config/approved_images.yaml` and `runtime_baseline.yaml`. Regenerate these after every intentional image rebuild or compose change.
+
+### Start
 
 ```bash
-docker compose up --build -d
+docker compose up --build
 ```
 
-The following containers will start across the segmented Docker networks:
+Services started:
 
-* `controller`
-* `risk-engine`
-* `dashboard`
-* `node1`, `node2`, `node3`, `node4`
-* `wazuh`
-* `security-monitor`
+| Container | Role |
+|---|---|
+| `docker-socket-proxy` | Docker API gateway |
+| `controller` | Message security gate (6 checks) |
+| `risk-engine` | Scoring, correlation, enforcement |
+| `dashboard` | Web UI at http://localhost:5000 |
+| `host-observer` | Image attestation, runtime drift, infra config integrity |
+| `node1–node4` | Tenant workloads |
+| `wazuh` | Mock SIEM |
+| `security-monitor` | Suricata + Zeek + Falco pipeline |
+| `falco` | Host-level runtime security sensor |
 
----
+### Access Dashboard
 
-## Access Dashboard
-
-Open your browser and go to:
-
-```text
+```
 http://localhost:5000
 ```
 
-You should see:
+The dashboard shows:
+- Per-node risk scores, trust status, and enforcement state
+- Live threat distribution chart (auto-refresh 5s)
+- Security alert feed with severity filter
+- Protocol integrity counters (HMAC failures, replay attempts, image mismatches, Falco alerts)
+- Node identity registry
 
-* Event statistics
-* Node risk scores
-* Recent security events
-* System activity feed
+### Useful Commands
+
+```bash
+docker compose logs -f                   # Stream all logs
+docker compose logs -f risk-engine       # Risk engine only
+docker compose logs -f host-observer     # Image/drift/config checks
+docker compose logs -f security-monitor  # Suricata/Zeek/Falco pipeline
+docker compose logs -f falco             # Falco raw events
+docker ps                                # Container status
+docker compose down                      # Stop and clean up
+```
 
 ---
 
-## Generate a Test Alert
+## 7. Testing & Simulation
 
-**Method 1: Automatic (Built-in Simulator)**
-The node agents include a built-in threat simulator that will automatically trigger every few minutes (`node1` has a higher chance). Simply watch the dashboard to see an attack escalate through 4 stages and end in quarantine.
+Threats are injected externally. Workload containers have no visibility into the security infrastructure.
 
-**Method 2: Manual Trigger**
-Open a shell inside a node:
+### Image Attestation Test
+
+Update `approved_images.yaml` with a wrong digest, then restart host-observer:
+
+```bash
+# Edit risk_engine/config/approved_images.yaml
+# Set node1 to a fake digest: sha256:deadbeef...
+
+docker compose restart host-observer
+# → IMAGE_MISMATCH event appears in dashboard within 5 seconds
+```
+
+Or pull a different image tag and repoint node1:
+
+```bash
+docker tag always-on-security-node1 tampered-node1
+# → UNAPPROVED_IMAGE if digest doesn't match
+```
+
+### Runtime Drift Test
+
+Attach an unexpected network to a running workload container:
+
+```bash
+docker network connect always-on-security_storage-net node1
+# → RUNTIME_DRIFT event: field=networks, unexpected attachment detected
+```
+
+Or add a capability:
+
+```bash
+docker update --cap-add SYS_PTRACE node2
+# → RUNTIME_DRIFT event: field=cap_add
+```
+
+### Infrastructure Config Tamper Test
+
+Edit a policy file while the system is running:
+
+```bash
+echo "# tamper" >> risk_engine/config/rules.yaml
+# → POLICY_TAMPER event within 30 seconds
+```
+
+### Falco Test
+
+Spawn a shell inside a workload container (this triggers Falco's "Terminal shell in container" rule):
 
 ```bash
 docker exec -it node1 bash
+# → FALCO_ALERT or REVERSE_SHELL event in security-monitor pipeline
 ```
 
-Generate high CPU usage:
+### Docker Exec Detection
 
 ```bash
-yes > /dev/null
+docker exec node2 id
+# → CONTAINER_EXEC + UNEXPECTED_EXEC events from docker_collector
 ```
 
-This should trigger:
-
-* High CPU detection
-* Risk score increase
-* Event creation
-* Dashboard updates
-* Node quarantine (when risk ≥ 100)
-* Wazuh alert (when node is quarantined)
-
-## Network Threat Tests
-
-The network monitor is designed for the Docker-only HPC simulation, so the easiest tests are container-to-container traffic patterns.
-
-* Port scan: run a simple port sweep from one container against another container's IP on `compute-net` or `storage-net`.
-* Unauthorized communication: send traffic from a compute container directly to the management segment.
-* Lateral movement: SSH from one node to another, then chain into a third node.
-* Beaconing: generate repeated low-byte, fixed-interval connections between the same pair of containers.
-* ICMP tunnel / protocol abuse: send large ICMP payloads or mismatched protocol traffic through Suricata-monitored paths.
-
-Expected outputs:
-
-* Suricata EVE JSON notice for port scans and ICMP tunnel patterns
-* Zeek notice for unauthorized pairs, fan-out, hop chains, and protocol mismatches
-* Python baseline JSON in `baselines/`
-
-Stop the process:
+### Suspicious Restart Pattern
 
 ```bash
-CTRL + C
+for i in $(seq 1 6); do docker restart node3; done
+# → SUSPICIOUS_RESTART_PATTERN event after 5th restart within 120s
 ```
 
-**Method 3: Advanced Node Attacks**
+### Rogue Node Injection
 
-You can also test the newly added cryptographic and node-level detectors:
-
-**1. Config Tampering (Triggers `CONFIG_TAMPER` alert)**
-Modify a monitored configuration file on a running node:
 ```bash
-docker exec node1 sh -c "echo '1.2.3.4 evil.com' >> /etc/hosts"
-```
-
-**2. Rogue Node Injection (Triggers `ROGUE_NODE` alert)**
-Launch an unauthorized node connecting to the controller. *Note: this requires the `.env` file to be present to grab the HMAC secret.*
-```bash
-docker run --rm --network always-on-security_security_net \
+docker run --rm --network always-on-security_mgmt-net \
   -e NODE_NAME=rogue99 \
-  -e HMAC_SECRET=$(grep HMAC_SECRET .env | cut -d= -f2) \
   always-on-security-node1
 ```
 
@@ -344,12 +517,27 @@ Trigger a quarantine on any node, then inspect the captured evidence before the 
 ---
 
 ## Useful Commands
+# → ROGUE_NODE alert, node blacklisted, fast-path stop
+```
+
+The Controller rejects the message (node not in allowlist), dynamically appends the node name to `/data/rogue_blacklist.yaml`, and forwards a single `ROGUE_NODE` alert to the Risk Engine (where the Policy Engine triggers a fast-path stop). Any subsequent messages from this rogue node are silently dropped by the Controller to prevent alert flooding.
+### Replay Attack
+
+Send a previously seen message with a duplicate `msg_id`. The Controller's `ReplayGuard` rejects it and forwards a `REPLAY_ATTACK` alert downstream.
+
+### Multi-Signal Correlation Test
+
+Combine two tests that fire within the correlation window:
 
 ```bash
-docker compose logs -f              # Stream all logs
-docker compose logs -f risk-engine  # Stream risk-engine logs only
-docker ps                           # Show status of all containers
-docker compose down                 # Stop and clean up the environment
+# Terminal 1 — trigger Falco alert
+docker exec -it node1 bash
+
+# Terminal 2 — connect unexpected network within 120s
+docker network connect always-on-security_storage-net node1
+
+# → Multi-signal correlation: FALCO_ALERT + UNEXPECTED_NETWORK_ATTACH
+#   If NETWORK_THREAT also fires from Suricata: 3.0× multiplier
 ```
 
 ---
@@ -406,68 +594,15 @@ The core monitoring architecture has been significantly hardened to simulate an 
 
 ---
 
-## Build-Time Security (CI/CD Pipeline)
+## 9. Known Gaps
 
-Layer 1 of the Always-On Security architecture — shift-left enforcement before any code reaches production.
-
-### What Was Added
-
-| File | Purpose |
-|------|---------|
-| `.github/workflows/build-time-security.yml` | 10-job security pipeline triggered on every push and PR |
-| `.github/workflows/sbom.yml` | SBOM generation on every merge to `main` |
-| `.gitleaks.toml` | Secret detection allowlist (HMAC variable refs, FIM integrity hashes) |
-| `.yamllint.yml` | YAML linting config for `risk_engine/config/` and `docker-compose.yml` |
-| `.checkov.yaml` | IaC skip list for intentional privileged/socket findings |
-| `node_agent/requirements.txt` | Pinned dependencies (was inline in Dockerfile) |
-| `*/`.dockerignore` (×6)` | Excludes `.env`, `data/`, `__pycache__/` from all build contexts |
-
-### Pipeline Stages
-
-```
-Push / PR
-    │
-    ├── Stage 1 (blocking, serial)
-    │   ├── secret-detection   GitLeaks — full git history scan
-    │   └── yaml-validation    yamllint + PyYAML safe_load on all configs
-    │
-    ├── Stage 2 (blocking, parallel)
-    │   ├── sast-bandit        Python SAST — blocks on HIGH severity
-    │   ├── sast-semgrep       p/python + p/secrets + p/owasp-top-ten
-    │   └── shellcheck         Shell script linting (advisory)
-    │
-    ├── Stage 3 (blocking, parallel)
-    │   └── sca-pip-audit      CVE scan on all requirements.txt files
-    │
-    ├── Stage 4 (advisory, parallel)
-    │   ├── hadolint           Dockerfile best-practice linting
-    │   ├── checkov            docker-compose.yml IaC scan
-    │   └── trivy              Filesystem CVE scan (blocks on CRITICAL)
-    │
-    └── Security Gate          Final pass/fail verdict for branch protection
-```
-
-### Codebase Fixes (Person B track)
-
-- **Dependency pinning** — all `requirements.txt` files pinned to exact versions; `pip-audit` reports zero CVEs
-- **`# nosec B108/B103`** — suppressed on intentional `/tmp` fallback path and attack simulator `chmod` with justification comments
-- **`# nosemgrep`** — suppressed on Flask `0.0.0.0` binding, mock SIEM `socket.bind`, and attack simulator `chmod`; all with exact rule IDs
-- **`.dockerignore`** — added to all 6 service directories; `.env` can no longer be accidentally included in a Docker image layer
-- **Non-root `USER` in Dockerfiles (DL3002 / Semgrep `missing-user-entrypoint`)** — `controller` and `risk-engine` now run as `appuser` (UID 1000). The risk-engine is granted `CAP_NET_ADMIN` in `docker-compose.yml` so iptables enforcement works without root; Docker socket access is via the `docker` group (GID 999).
-
-### Compliance Mapping
-
-| Check | NIST SP 800-234 | CIS Controls |
-|-------|----------------|--------------|
-| GitLeaks | SC-12, SC-13 | CIS 3.11, 4.1 |
-| YAML validation | CM-2, CM-6 | CIS 4.1 |
-| Bandit / Semgrep | SA-11, SI-7 | CIS 16.1, 16.4 |
-| pip-audit | SA-12, SI-2 | CIS 2.2, 7.3 |
-| Trivy | RA-5, SI-2 | CIS 7.1, 7.3 |
-| SBOM (Syft) | SA-12 | CIS 2.1 |
-
-### Known Gaps (Tracked as Issues)
-
-- HMAC\_SECRET passed as plain env var — should migrate to Docker secrets (REC-11)
-- Docker base images use floating tags (`python:3.11-slim`) — should pin to digest (DL3007)
-- No `HEALTHCHECK` in any Dockerfile (CKV\_DOCKER\_2)
+| Issue | Category | Notes |
+|---|---|---|
+| `HMAC_SECRET` passed as plain env var | Secret management | Should migrate to Docker secrets or a vault |
+| Base images use floating tags | Supply chain | Should pin to image digest |
+| Falco uses `privileged: true` + `pid: host` | Attack surface | Required for kernel-level instrumentation; acceptable in Infrastructure Zone |
+| `security-monitor` requires `privileged: true` | Attack surface | Required for Suricata/Zeek raw packet capture; Infrastructure Zone only |
+| Host Observer polls every 5s | Detection latency | Near-real-time; not kernel-event-driven (that role now belongs to Falco) |
+| `approved_images.yaml` has empty digests by default | Image attestation | Must be populated after first build with `capture_approved_images.py` |
+| Falco uses `falco-no-driver` image | Kernel module | The eBPF driver approach requires kernel headers; `falco-no-driver` uses syscall fallback |
+| Docker socket proxy still needed on Falco | Architecture | Falco mounts the raw socket directly for container metadata enrichment; this is a known Falco requirement |

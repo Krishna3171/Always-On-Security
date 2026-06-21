@@ -1,28 +1,20 @@
-- id: HIGH_CPU
-  match:
-    reasons_contains: "CPU"
-  severity: 10
-  blast_radius: 5
+# Risk Engine Rules
+#
+# Rules removed in this refactor:
+#   FIM_CONFIG_TAMPER  — tenant file hashing removed (violates workload ownership)
+#   FIM_FILE_MODIFIED  — tenant file hashing removed
+#   SUSPICIOUS_PROCESS — process name denylist removed (trivially spoofable)
+#   UNAUTH_PROCESS     — same reason
+#   HIGH_CPU / HIGH_MEMORY / PROCESS_COUNT — replaced by infrastructure detections
+#
+# New rules added:
+#   IMAGE_MISMATCH, UNAPPROVED_IMAGE, IMAGE_DRIFT
+#   RUNTIME_DRIFT
+#   CONFIG_DRIFT, POLICY_TAMPER, ALLOWLIST_TAMPER
+#   CONTAINER_EXEC, UNEXPECTED_EXEC, SUSPICIOUS_RESTART_PATTERN, UNEXPECTED_NETWORK_ATTACH
+#   FALCO_ALERT, REVERSE_SHELL, PRIV_ESC_ATTEMPT, CONTAINER_ESCAPE_ATTEMPT
 
-- id: HIGH_MEMORY
-  match:
-    reasons_contains: "memory"
-  severity: 10
-  blast_radius: 5
-
-- id: PROCESS_COUNT
-  match:
-    reasons_contains: "Too many"
-  severity: 15
-  blast_radius: 10
-
-- id: SUSPICIOUS_PROCESS
-  match:
-    reasons_contains: "Suspicious process"
-  severity: 35
-  blast_radius: 20
-
-# ── Security Layer Rules ─────────────────────────────────────────────────────
+# ── Protocol Layer ────────────────────────────────────────────────────────────
 
 - id: ROGUE_NODE
   match:
@@ -48,29 +40,11 @@
   severity: 30
   blast_radius: 15
 
-- id: LATERAL_MOVEMENT
+- id: TELEMETRY_TAMPER
   match:
-    reasons_contains: "Lateral movement"
-  severity: 55
-  blast_radius: 35
-
-- id: CONFIG_TAMPER
-  match:
-    reasons_contains: "Config tamper"
+    reasons_contains: "HMAC"
   severity: 50
   blast_radius: 30
-
-- id: UNAUTH_PROCESS
-  match:
-    reasons_contains: "Unauthorized process"
-  severity: 35
-  blast_radius: 20
-
-- id: NETWORK_THREAT
-  match:
-    reasons_contains: "Network threat"
-  severity: 55
-  blast_radius: 35
 
 - id: SILENT_NODE
   match:
@@ -78,8 +52,116 @@
   severity: 40
   blast_radius: 20
 
-- id: TELEMETRY_TAMPER
+# ── Network / NIDS Layer ──────────────────────────────────────────────────────
+
+- id: NETWORK_THREAT
   match:
-    reasons_contains: "HMAC"
+    reasons_contains: "Network threat"
+  severity: 55
+  blast_radius: 35
+
+- id: LATERAL_MOVEMENT
+  match:
+    reasons_contains: "Lateral movement"
+  severity: 55
+  blast_radius: 35
+
+# ── Image Attestation (Improvement 1) ────────────────────────────────────────
+
+- id: IMAGE_MISMATCH
+  match:
+    reasons_contains: "Image digest mismatch"
+  severity: 65
+  blast_radius: 40
+
+- id: UNAPPROVED_IMAGE
+  match:
+    reasons_contains: "no approved image digest"
+  severity: 55
+  blast_radius: 35
+
+- id: IMAGE_DRIFT
+  match:
+    reasons_contains: "Image drift"
+  severity: 55
+  blast_radius: 35
+
+# ── Runtime Drift Detection (Improvement 2) ──────────────────────────────────
+
+- id: RUNTIME_DRIFT
+  match:
+    reasons_contains: "Runtime drift detected"
+  severity: 60
+  blast_radius: 40
+
+# ── Infrastructure Config Integrity (Improvement 3) ──────────────────────────
+
+- id: CONFIG_DRIFT
+  match:
+    reasons_contains: "Infrastructure config modified"
+  severity: 55
+  blast_radius: 35
+
+- id: POLICY_TAMPER
+  match:
+    reasons_contains: "POLICY_TAMPER"
+  severity: 65
+  blast_radius: 45
+
+- id: ALLOWLIST_TAMPER
+  match:
+    reasons_contains: "ALLOWLIST_TAMPER"
+  severity: 70
+  blast_radius: 50
+
+# ── Docker Event Analytics (Improvement 4) ───────────────────────────────────
+
+- id: CONTAINER_EXEC
+  match:
+    reasons_contains: "exec"
+  severity: 45
+  blast_radius: 25
+
+- id: UNEXPECTED_EXEC
+  match:
+    reasons_contains: "UNEXPECTED_EXEC"
+  severity: 55
+  blast_radius: 35
+
+- id: SUSPICIOUS_RESTART_PATTERN
+  match:
+    reasons_contains: "SUSPICIOUS_RESTART_PATTERN"
+  severity: 40
+  blast_radius: 20
+
+- id: UNEXPECTED_NETWORK_ATTACH
+  match:
+    reasons_contains: "UNEXPECTED_NETWORK_ATTACH"
   severity: 50
   blast_radius: 30
+
+# ── Falco Integration (Improvement 5) ────────────────────────────────────────
+
+- id: FALCO_ALERT
+  match:
+    reasons_contains: "Falco alert"
+  severity: 50
+  blast_radius: 30
+
+- id: REVERSE_SHELL
+  match:
+    reasons_contains: "REVERSE_SHELL"
+  severity: 80
+  blast_radius: 60
+
+- id: PRIV_ESC_ATTEMPT
+  match:
+    reasons_contains: "PRIV_ESC_ATTEMPT"
+  severity: 70
+  blast_radius: 50
+
+- id: CONTAINER_ESCAPE_ATTEMPT
+  match:
+    reasons_contains: "CONTAINER_ESCAPE_ATTEMPT"
+  severity: 90
+  blast_radius: 70
