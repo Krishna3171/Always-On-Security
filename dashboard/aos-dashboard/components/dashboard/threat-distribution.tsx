@@ -25,7 +25,7 @@ const COLORS = [
 export function ThreatDistribution() {
   const { data, isLoading } = useStats();
 
-  const chartData = Object.entries(data?.by_type ?? {})
+  const chartData = Object.entries((data?.by_type ?? {}) as Record<string, number>)
     .sort((a, b) => b[1] - a[1])
     .slice(0, 7)
     .map(([name, value]) => ({
