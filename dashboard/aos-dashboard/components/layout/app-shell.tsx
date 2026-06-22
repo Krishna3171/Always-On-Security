@@ -2,10 +2,10 @@ import { AppSidebar } from "./app-sidebar";
 
 export function AppShell({ children }: { children: React.ReactNode }) {
   return (
-    <div className="flex min-h-screen bg-zinc-950">
+    <div className="bg-zinc-950">
       <AppSidebar />
 
-      <main className="flex-1 overflow-auto">{children}</main>
+      <main className="ml-64 min-h-screen">{children}</main>
     </div>
   );
 }

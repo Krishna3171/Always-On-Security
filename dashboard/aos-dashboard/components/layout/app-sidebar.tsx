@@ -34,14 +34,19 @@ export function AppSidebar() {
   return (
     <aside
       className="
-        flex
-        h-screen
-        w-64
-        flex-col
-        border-r
-        border-zinc-800
-        bg-zinc-950
-      "
+    fixed
+    left-0
+    top-0
+    z-50
+    flex
+    h-screen
+    w-64
+    flex-col
+    border-r
+    border-zinc-800
+    bg-zinc-950/95
+    backdrop-blur-md
+  "
     >
       {/* Logo */}
       <div className="border-b border-zinc-800 p-6">
