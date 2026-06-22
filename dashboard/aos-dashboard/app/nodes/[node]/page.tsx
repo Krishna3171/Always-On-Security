@@ -5,11 +5,14 @@ import { use } from "react";
 import { Card } from "@/components/ui/card";
 
 import { useNodeDetails } from "@/hooks/useNodeDetails";
+import { useNodeIdentity } from "@/hooks/useNodeIdentity";
+import { useNodeSecurity } from "@/hooks/useNodeSecurity";
 
 import { NodeTimeline } from "@/components/nodes/node-timeline";
 import { RulesCard } from "@/components/nodes/rules-card";
 import { RiskTrend } from "@/components/nodes/risk-trend";
 import { ReasonsCard } from "@/components/nodes/reasons-card";
+import { NodeActions } from "@/components/nodes/node-actions";
 
 export default function NodeDetailsPage({
   params,
@@ -20,7 +23,10 @@ export default function NodeDetailsPage({
 }) {
   const { node } = use(params);
 
-  const { data, isLoading, error } = useNodeDetails(node);
+  const { data: history, isLoading, error } = useNodeDetails(node);
+
+  const { data: identity } = useNodeIdentity(node);
+  const { data: security } = useNodeSecurity(node);
 
   if (isLoading) {
     return (
@@ -42,71 +48,145 @@ export default function NodeDetailsPage({
     );
   }
 
-  const latest = data?.[0];
-
   const rules = Array.from(
-    new Set(data?.flatMap((event: any) => event.matched_rules ?? []) ?? []),
+    new Set(history?.flatMap((event: any) => event.matched_rules ?? []) ?? []),
   ) as string[];
 
   const reasons = Array.from(
-    new Set(data?.flatMap((event: any) => event.reasons ?? []) ?? []),
+    new Set(history?.flatMap((event: any) => event.reasons ?? []) ?? []),
   ) as string[];
 
   return (
     <div className="relative min-h-screen bg-zinc-950">
-      {/* Background Effects */}
       <div className="fixed inset-0 -z-10 overflow-hidden">
         <div className="absolute left-0 top-0 h-96 w-96 rounded-full bg-red-500/10 blur-3xl" />
         <div className="absolute right-0 top-0 h-96 w-96 rounded-full bg-orange-500/10 blur-3xl" />
       </div>
 
       <div className="mx-auto max-w-7xl space-y-6 p-8">
-        {/* Header */}
-        <div>
-          <h1 className="text-4xl font-bold text-white">{node}</h1>
+        {/* HEADER */}
+        <div className="flex items-start justify-between">
+          <div>
+            <h1 className="text-4xl font-bold text-white">{node}</h1>
 
-          <p className="mt-2 text-zinc-400">Security Investigation View</p>
+            <p className="mt-2 text-zinc-400">Security Investigation View</p>
+
+            <div className="mt-3 flex gap-4 text-sm">
+              <span className="text-zinc-400">
+                Status:
+                <span className="ml-2 font-medium text-white">
+                  {security?.status ?? "Unknown"}
+                </span>
+              </span>
+
+              <span className="text-zinc-400">
+                Trust:
+                <span className="ml-2 font-medium text-amber-400">
+                  {identity?.trust_status ?? "Unknown"}
+                </span>
+              </span>
+            </div>
+          </div>
+
+          <NodeActions node={node} status={security?.status} />
         </div>
 
-        {/* Summary Cards */}
-        <div className="grid gap-6 md:grid-cols-3">
+        {/* CURRENT SECURITY STATE */}
+        <div className="grid gap-6 md:grid-cols-4">
           <Card className="border-zinc-800 bg-zinc-900 p-6">
-            <div className="text-sm text-zinc-500">Risk Score</div>
+            <div className="text-sm text-zinc-500">Current Risk Score</div>
 
             <div className="mt-2 text-4xl font-bold text-red-400">
-              {latest?.risk_score ?? 0}
+              {security?.risk_score ?? 0}
             </div>
           </Card>
 
           <Card className="border-zinc-800 bg-zinc-900 p-6">
-            <div className="text-sm text-zinc-500">Weighted Score</div>
-
-            <div className="mt-2 text-4xl font-bold text-orange-400">
-              {latest?.weighted_score ?? 0}
-            </div>
-          </Card>
-
-          <Card className="border-zinc-800 bg-zinc-900 p-6">
-            <div className="text-sm text-zinc-500">Bucket</div>
+            <div className="text-sm text-zinc-500">Current Status</div>
 
             <div className="mt-2 text-3xl font-bold text-cyan-400">
-              {latest?.bucket ?? "N/A"}
+              {security?.status ?? "Unknown"}
+            </div>
+          </Card>
+
+          <Card className="border-zinc-800 bg-zinc-900 p-6">
+            <div className="text-sm text-zinc-500">Trust Status</div>
+
+            <div className="mt-2 text-3xl font-bold text-amber-400">
+              {identity?.trust_status ?? "Unknown"}
+            </div>
+          </Card>
+
+          <Card className="border-zinc-800 bg-zinc-900 p-6">
+            <div className="text-sm text-zinc-500">Silent Events</div>
+
+            <div className="mt-2 text-4xl font-bold text-orange-400">
+              {security?.silent_count ?? 0}
             </div>
           </Card>
         </div>
 
-        {/* Charts */}
-        <div className="grid gap-6 xl:grid-cols-2">
-          <RiskTrend data={data ?? []} />
+        {/* NODE IDENTITY */}
+        <Card className="border-zinc-800 bg-zinc-900 p-6">
+          <h2 className="mb-6 text-lg font-semibold text-white">
+            Node Identity
+          </h2>
 
-          <RulesCard rules={rules} />
-        </div>
+          <div className="grid gap-6 md:grid-cols-3">
+            <div>
+              <div className="text-xs uppercase tracking-wide text-zinc-500">
+                Machine ID
+              </div>
 
-        {/* Timeline + Reasons */}
-        <div className="grid gap-6 xl:grid-cols-2">
-          <NodeTimeline events={data ?? []} />
+              <div className="mt-2 break-all font-mono text-sm text-zinc-300">
+                {identity?.machine_id}
+              </div>
+            </div>
 
-          <ReasonsCard reasons={reasons} />
+            <div>
+              <div className="text-xs uppercase tracking-wide text-zinc-500">
+                First Seen
+              </div>
+
+              <div className="mt-2 text-zinc-300">
+                {identity?.first_seen
+                  ? new Date(identity.first_seen).toLocaleString()
+                  : "Unknown"}
+              </div>
+            </div>
+
+            <div>
+              <div className="text-xs uppercase tracking-wide text-zinc-500">
+                Last Seen
+              </div>
+
+              <div className="mt-2 text-zinc-300">
+                {identity?.last_seen
+                  ? new Date(identity.last_seen).toLocaleString()
+                  : "Unknown"}
+              </div>
+            </div>
+          </div>
+        </Card>
+
+        {/* INVESTIGATION HISTORY */}
+        <div>
+          <h2 className="mb-4 text-xl font-semibold text-white">
+            Investigation History
+          </h2>
+
+          <div className="grid gap-6 xl:grid-cols-2">
+            <RiskTrend data={history ?? []} />
+            <RulesCard rules={rules} />
+          </div>
+
+          <div className="mt-6 grid gap-6 xl:grid-cols-2">
+            <ReasonsCard reasons={reasons} />
+          </div>
+
+          <div className="mt-6">
+            <NodeTimeline events={history ?? []} />
+          </div>
         </div>
       </div>
     </div>

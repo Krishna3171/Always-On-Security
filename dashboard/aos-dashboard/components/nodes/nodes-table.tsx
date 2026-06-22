@@ -19,7 +19,6 @@ import { StatusBadge } from "./status-badge";
 
 export function NodesTable() {
   const { data, isLoading } = useNodes();
-
   if (isLoading) {
     return <Card className="p-6">Loading nodes...</Card>;
   }

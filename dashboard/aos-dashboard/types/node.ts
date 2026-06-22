@@ -13,3 +13,11 @@ export interface NodeSecurity {
 
   last_updated: string;
 }
+export interface NodeIdentity {
+  node: string;
+  machine_id: string;
+  trust_status: string;
+  first_seen: string;
+  status: string;
+  last_seen: string;
+}

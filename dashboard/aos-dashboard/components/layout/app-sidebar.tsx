@@ -3,7 +3,15 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 
-import { LayoutDashboard, ShieldAlert, Server, Radar } from "lucide-react";
+import {
+  LayoutDashboard,
+  ShieldAlert,
+  Server,
+  Radar,
+  RotateCcw,
+} from "lucide-react";
+import { useSystemReset } from "@/hooks/useSystemReset";
+import { toast } from "sonner";
 
 const items = [
   {
@@ -30,7 +38,24 @@ const items = [
 
 export function AppSidebar() {
   const pathname = usePathname();
+  const resetMutation = useSystemReset();
+  const handleReset = async () => {
+    if (
+      !confirm(
+        "Reset the entire Always-On Security environment?\n\nThis clears alerts, scores and investigation state.",
+      )
+    ) {
+      return;
+    }
 
+    try {
+      await resetMutation.mutateAsync();
+
+      toast.success("System reset initiated");
+    } catch {
+      toast.error("System reset failed");
+    }
+  };
   return (
     <aside
       className="
@@ -94,22 +119,41 @@ export function AppSidebar() {
       </nav>
 
       {/* Footer Status */}
-      <div className="p-4">
-        <div
-          className="
-            rounded-lg
-            border
-            border-zinc-800
-            bg-zinc-900
-            p-3
-          "
-        >
+      <div className="space-y-3 p-4">
+        <div className="rounded-lg border border-zinc-800 bg-zinc-900 p-3">
           <div className="flex items-center gap-2">
-            <div className="h-2 w-2 rounded-full bg-green-500 animate-pulse" />
+            <div className="h-2 w-2 animate-pulse rounded-full bg-green-500" />
 
             <span className="text-sm text-zinc-300">Monitoring Active</span>
           </div>
         </div>
+
+        <button
+          onClick={handleReset}
+          disabled={resetMutation.isPending}
+          className="
+      flex
+      w-full
+      items-center
+      justify-center
+      gap-2
+      rounded-lg
+      border
+      border-red-900
+      bg-red-500
+      px-3
+      py-2
+      text-sm
+      text-white
+      transition-colors
+      hover:bg-red-900/40
+      disabled:opacity-50
+    "
+        >
+          <RotateCcw size={16} />
+
+          {resetMutation.isPending ? "Resetting..." : "Reset Environment"}
+        </button>
       </div>
     </aside>
   );

@@ -11,8 +11,6 @@ import { SeverityBadge } from "./severity-badge";
 
 export function RecentAlerts() {
   const { data, isLoading } = useAlerts();
-  console.log("alerts", data);
-  console.log("count", data?.length);
   return (
     <Card className="border-zinc-800 bg-zinc-900 p-6">
       <div className="mb-4 flex items-center justify-between">
